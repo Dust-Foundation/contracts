@@ -27,6 +27,7 @@ interface IV3Pool {
 interface IDustVault {
     function accrue(address user, uint256 amount) external;
     function debitAccrued(address user, uint256 amount) external;
+    function reaccrue(address user, uint256 amount) external;
     function creditTokens(address user, address token, uint256 tokenAmount, uint256 stableSpent) external;
     function accruedStable(address user) external view returns (uint256);
     function tokenBalanceOf(address user, address token) external view returns (uint256);

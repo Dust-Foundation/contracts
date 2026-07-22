@@ -22,6 +22,14 @@ contract DustRouter {
     uint256 public immutable unit;
 
     address private expectedPool;
+    uint256 private locked = 1;
+
+    modifier nonReentrant() {
+        if (locked != 1) revert BadCallback();
+        locked = 2;
+        _;
+        locked = 1;
+    }
 
     event SwapWithRoundUp(
         address indexed user,
@@ -66,7 +74,7 @@ contract DustRouter {
         uint256 minOut,
         uint256 granularity,
         uint256 multiplier
-    ) external returns (uint256 tokensOut, uint256 roundUp) {
+    ) external nonReentrant returns (uint256 tokensOut, uint256 roundUp) {
         if (amountIn == 0) revert BadParams();
         roundUp = roundUpAmount(amountIn, granularity, multiplier);
 

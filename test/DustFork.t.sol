@@ -47,6 +47,11 @@ contract DustForkTest is Test {
         deal(USDC, alice, 1_000e18);
     }
 
+    function _minOuts(uint256 v) internal pure returns (uint256[] memory m) {
+        m = new uint256[](5);
+        for (uint256 i; i < 5; i++) m[i] = v;
+    }
+
     /// The core product flow: swap 137.42, round up to 140, sweep, hold basket.
     function test_endToEnd_swapRoundUpSweepWithdraw() public {
         vm.startPrank(alice);
@@ -65,11 +70,11 @@ contract DustForkTest is Test {
         assertEq(IERC20(USDC).balanceOf(address(router)), 0, "router must hold nothing");
 
         // sweep her 2.58 into the 5-stock basket (self-sweep)
-        uint256[] memory minOuts = new uint256[](5);
+        uint256[] memory minOuts = _minOuts(1);
         vm.prank(alice);
-        sweeper.sweep(alice, minOuts);
+        sweeper.sweep(alice, minOuts, 0);
 
-        assertEq(vault.accruedStable(alice), 0);
+        assertEq(vault.accruedStable(alice), 0, "full fill should leave nothing accrued");
         assertEq(vault.costBasis(alice), 2.58e18);
         address[5] memory toks = [TSLA, AMZN, PLTR, NFLX, AMD];
         for (uint256 i; i < 5; i++) {
@@ -95,10 +100,10 @@ contract DustForkTest is Test {
 
         sweeper.setPaused(true);
 
-        uint256[] memory minOuts = new uint256[](5);
+        uint256[] memory minOuts = _minOuts(1);
         vm.prank(alice);
         vm.expectRevert(DustSweeper.Paused.selector);
-        sweeper.sweep(alice, minOuts);
+        sweeper.sweep(alice, minOuts, 0);
 
         // withdrawal of accrued stable still works while paused
         vm.prank(alice);
@@ -113,21 +118,53 @@ contract DustForkTest is Test {
         vm.stopPrank();
 
         address mallory = makeAddr("mallory");
-        uint256[] memory minOuts = new uint256[](5);
+        uint256[] memory minOuts = _minOuts(1);
         vm.prank(mallory);
         vm.expectRevert(DustSweeper.NotAuthorized.selector);
-        sweeper.sweep(alice, minOuts);
+        sweeper.sweep(alice, minOuts, 0);
     }
 
-    function test_slippageBoundReverts() public {
+    /// A leg whose slippage bound can't be met is SKIPPED (isolated), not fatal:
+    /// its stable slice returns to the user's accrued balance, the rest buys.
+    function test_tightLegIsSkippedAndReaccrued() public {
+        vm.startPrank(alice);
+        IERC20(USDC).approve(address(router), type(uint256).max);
+        router.swapWithRoundUp(P_TSLA, TSLA, 99.5e18, 1, 1, 1); // 0.50 round-up
+        vm.stopPrank();
+
+        uint256[] memory minOuts = _minOuts(1);
+        minOuts[0] = type(uint256).max; // TSLA leg impossible to fill
+
+        vm.prank(alice);
+        sweeper.sweep(alice, minOuts, 0);
+
+        // TSLA leg skipped -> no TSLA credited, its 20% slice re-accrued
+        assertEq(vault.tokenBalanceOf(alice, TSLA), 0, "skipped leg must not credit");
+        assertApproxEqAbs(vault.accruedStable(alice), 0.5e18 / 5, 2, "skipped slice returned");
+        // the other four legs still bought
+        assertGt(vault.tokenBalanceOf(alice, AMZN), 0);
+        assertGt(vault.tokenBalanceOf(alice, AMD), 0);
+        assertEq(IERC20(USDC).balanceOf(address(sweeper)), 0, "sweeper holds nothing");
+    }
+
+    function test_zeroMinOutRejected() public {
         vm.startPrank(alice);
         IERC20(USDC).approve(address(router), type(uint256).max);
         router.swapWithRoundUp(P_TSLA, TSLA, 99.5e18, 1, 1, 1);
+        uint256[] memory minOuts = _minOuts(1);
+        minOuts[2] = 0; // one zero floor on a funded leg
+        vm.expectRevert(DustSweeper.ZeroMinOut.selector);
+        sweeper.sweep(alice, minOuts, 0);
+        vm.stopPrank();
+    }
 
-        uint256[] memory minOuts = new uint256[](5);
-        minOuts[0] = type(uint256).max; // impossible bound
-        vm.expectRevert(DustSweeper.SlippageExceeded.selector);
-        sweeper.sweep(alice, minOuts);
+    function test_staleBasketRejected() public {
+        vm.startPrank(alice);
+        IERC20(USDC).approve(address(router), type(uint256).max);
+        router.swapWithRoundUp(P_TSLA, TSLA, 99.5e18, 1, 1, 1);
+        uint256[] memory minOuts = _minOuts(1);
+        vm.expectRevert(DustSweeper.StaleBasket.selector);
+        sweeper.sweep(alice, minOuts, 99); // wrong version
         vm.stopPrank();
     }
 

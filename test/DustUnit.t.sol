@@ -45,6 +45,16 @@ contract MockERC20 {
     }
 }
 
+contract MockPool {
+    address public token0;
+    address public token1;
+
+    constructor(address _t0, address _t1) {
+        token0 = _t0;
+        token1 = _t1;
+    }
+}
+
 contract DustUnitTest is Test {
     MockERC20 stable;
     DustVault vault;
@@ -156,15 +166,24 @@ contract DustUnitTest is Test {
 
     // ---- sweeper config ----
 
-    function test_sweeper_basketTimelock() public {
+    function _leg(address token, uint16 bps) internal returns (DustSweeper.BasketLeg memory) {
+        // pool must pair `stable` with `token` to pass _validate
+        MockPool p = new MockPool(address(stable), token);
+        return DustSweeper.BasketLeg(token, address(p), bps);
+    }
+
+    function test_sweeper_basketTimelockAndVersion() public {
+        address tA = address(new MockERC20("A", 18));
+        address tB = address(new MockERC20("B", 18));
         DustSweeper.BasketLeg[] memory legs = new DustSweeper.BasketLeg[](1);
-        legs[0] = DustSweeper.BasketLeg(address(1), address(2), 10_000);
+        legs[0] = _leg(tA, 10_000);
         DustSweeper sweeper =
             new DustSweeper(IERC20(address(stable)), IDustVault(address(vault)), 1 days, legs);
+        assertEq(sweeper.basketVersion(), 0);
 
         DustSweeper.BasketLeg[] memory next = new DustSweeper.BasketLeg[](2);
-        next[0] = DustSweeper.BasketLeg(address(1), address(2), 6_000);
-        next[1] = DustSweeper.BasketLeg(address(3), address(4), 4_000);
+        next[0] = _leg(tA, 6_000);
+        next[1] = _leg(tB, 4_000);
         sweeper.proposeBasket(next);
 
         vm.expectRevert(DustSweeper.TimelockNotReady.selector);
@@ -173,12 +192,43 @@ contract DustUnitTest is Test {
         vm.warp(block.timestamp + 1 days);
         sweeper.executeBasket();
         assertEq(sweeper.basketLength(), 2);
+        assertEq(sweeper.basketVersion(), 1, "version must bump");
     }
 
     function test_sweeper_rejectsBadWeights() public {
         DustSweeper.BasketLeg[] memory legs = new DustSweeper.BasketLeg[](1);
-        legs[0] = DustSweeper.BasketLeg(address(1), address(2), 9_999);
+        legs[0] = _leg(address(new MockERC20("A", 18)), 9_999);
         vm.expectRevert(DustSweeper.BadBasket.selector);
         new DustSweeper(IERC20(address(stable)), IDustVault(address(vault)), 1 days, legs);
+    }
+
+    function test_sweeper_rejectsPoolTokenMismatch() public {
+        address tA = address(new MockERC20("A", 18));
+        address wrong = address(new MockERC20("W", 18));
+        // pool pairs stable/wrong but leg claims token tA -> must reject
+        MockPool p = new MockPool(address(stable), wrong);
+        DustSweeper.BasketLeg[] memory legs = new DustSweeper.BasketLeg[](1);
+        legs[0] = DustSweeper.BasketLeg(tA, address(p), 10_000);
+        vm.expectRevert(DustSweeper.BadBasket.selector);
+        new DustSweeper(IERC20(address(stable)), IDustVault(address(vault)), 1 days, legs);
+    }
+
+    function test_sweeper_twoStepOwnership() public {
+        DustSweeper.BasketLeg[] memory legs = new DustSweeper.BasketLeg[](1);
+        legs[0] = _leg(address(new MockERC20("A", 18)), 10_000);
+        DustSweeper sweeper =
+            new DustSweeper(IERC20(address(stable)), IDustVault(address(vault)), 1 days, legs);
+
+        vm.expectRevert(DustSweeper.ZeroAddress.selector);
+        sweeper.transferOwnership(address(0));
+
+        sweeper.transferOwnership(bob);
+        assertEq(sweeper.owner(), address(this), "owner unchanged until accept");
+        vm.prank(alice);
+        vm.expectRevert(DustSweeper.NotAuthorized.selector);
+        sweeper.acceptOwnership();
+        vm.prank(bob);
+        sweeper.acceptOwnership();
+        assertEq(sweeper.owner(), bob);
     }
 }

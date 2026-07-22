@@ -70,9 +70,10 @@ contract DeployAndFlowLive is Script {
         console2.log("swap got TSLA:", tslaOut);
         console2.log("round-up banked:", roundUp);
 
-        // 3. sweep the change into the 5-stock basket
+        // 3. sweep the change into the 5-stock basket (nonzero slippage floors)
         uint256[] memory minOuts = new uint256[](5);
-        sweeper.sweep(me, minOuts);
+        for (uint256 j; j < 5; j++) minOuts[j] = 1;
+        sweeper.sweep(me, minOuts, 0);
         console2.log("--- vault position after sweep ---");
         console2.log("TSLA:", vault.tokenBalanceOf(me, TSLA));
         console2.log("AMZN:", vault.tokenBalanceOf(me, AMZN));

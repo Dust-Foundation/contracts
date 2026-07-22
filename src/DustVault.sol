@@ -8,10 +8,12 @@ import {IERC20} from "./interfaces/IDust.sol";
 ///         round-ups and the basket tokens bought with them.
 ///
 /// Invariants this contract is built around:
-///  - Withdrawals ALWAYS work. There is no pause here and no owner power that
-///    can touch, freeze, or redirect a user's balances.
-///  - Only the router may accrue; only the sweeper may debit accrued stable
-///    and credit bought tokens. Both are set exactly once.
+///  - Accrued-stable withdrawals ALWAYS work: no pause here, no owner power that
+///    can touch, freeze, or redirect a user's stable balance. (Stock-token
+///    withdrawals depend on the issuer not having paused/blocked that token;
+///    that residual risk is the issuer's, not Dust's — see withdrawToken.)
+///  - Only the router may accrue; only the sweeper may debit accrued stable,
+///    re-accrue unspent stable, and credit bought tokens. Both set exactly once.
 ///  - Vault balances are per-user accounting entries; no pooled shares, no
 ///    cross-user math, nothing to manipulate with donations.
 contract DustVault {
@@ -80,6 +82,17 @@ contract DustVault {
         tokenBalance[user][token] += tokenAmount;
         costBasis[user] += stableSpent;
         emit TokensCredited(user, token, tokenAmount, stableSpent);
+    }
+
+    /// Sweeper returns stable it debited but could not invest (a skipped/paused
+    /// leg, or the unspent remainder of a partial fill). Stable must already
+    /// have been transferred back to this vault in the same transaction. This
+    /// keeps the "never strand user stable" property: anything not turned into
+    /// basket tokens returns to the user's withdrawable accrued balance.
+    function reaccrue(address user, uint256 amount) external {
+        if (msg.sender != sweeper) revert NotAuthorized();
+        accruedStable[user] += amount;
+        emit Accrued(user, amount);
     }
 
     // ---- user surface (always available) ----
