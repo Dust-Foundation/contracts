@@ -2,3 +2,5 @@
 # never commit local secrets
 .secrets/
 .env
+cache/
+out/

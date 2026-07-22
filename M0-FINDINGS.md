@@ -2,7 +2,15 @@
 
 Date: July 22, 2026. Network: Robinhood Chain testnet (chain ID 46630).
 
-## Verdict so far: GO (fork-verified; live confirmation pending faucet funds)
+## Verdict: GO — confirmed live on testnet
+
+Live broadcast completed July 22, 2026 (9 transactions, all successful).
+`ComposabilityProbe` deployed at `0xc6d1b72036195d943d6f14dfbf1fb9dc3a7a2ca8`
+(deploy tx `0x45af1062828ce7579e5aecc80c017a94309f061ad30b7769c536656ddce64be7`).
+With real transactions, a third-party contract: received 1 TSLA, pulled 1 TSLA via
+approve+transferFrom, pushed it back out, and bought ~1.63 TSLA with 0.002 WETH on
+the live TSLA/WETH pool. Full record in `broadcast/ProbeLive.s.sol/46630/`.
+Every M0 gate question is answered; M1 is unblocked.
 
 All five composability tests pass on a fork of the live testnet, executing the
 real deployed Stock Token and pool bytecode:
