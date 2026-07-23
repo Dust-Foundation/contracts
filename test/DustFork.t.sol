@@ -156,6 +156,34 @@ contract DustForkTest is Test {
         sweeper.setFeeBps(501); // > MAX_FEE_BPS (5%)
     }
 
+    /// If every leg is skipped, no round-up was actually swept -> no fee charged,
+    /// the user gets the full amount back (fee included).
+    function test_noFeeWhenNothingInvested() public {
+        sweeper.setFeeBps(100); // 1% on
+        // single-stock basket, then make its one leg unfillable via minOut
+        address[] memory toks = new address[](1);
+        uint16[] memory wts = new uint16[](1);
+        toks[0] = TSLA; wts[0] = 10_000;
+        vm.prank(alice);
+        sweeper.setBasket(toks, wts);
+
+        vm.startPrank(alice);
+        IERC20(USDC).approve(address(router), type(uint256).max);
+        router.swapWithRoundUp(P_TSLA, TSLA, 99.5e18, 1, 1, 1); // 0.50 change
+        vm.stopPrank();
+
+        uint256[] memory minOuts = new uint256[](1);
+        minOuts[0] = type(uint256).max; // impossible -> leg skipped -> nothing invested
+
+        vm.prank(alice);
+        sweeper.sweep(alice, minOuts, 1);
+
+        assertEq(IERC20(USDC).balanceOf(treasury), 0, "no fee when nothing invested");
+        assertEq(vault.accruedStable(alice), 0.5e18, "full amount returned");
+        assertEq(vault.costBasis(alice), 0);
+        assertEq(IERC20(USDC).balanceOf(address(sweeper)), 0, "sweeper holds nothing");
+    }
+
     /// Two users, two different baskets, from the same shared menu.
     function test_twoUsersDifferentBaskets() public {
         // alice: 100% TSLA

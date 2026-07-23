@@ -236,12 +236,10 @@ contract DustSweeper {
         if (amount == 0 || amount < minSweepAmount) revert BelowMinimum();
         vault.debitAccrued(user, amount); // sweeper now holds `amount` stable
 
-        // skim the fee off the top, to the treasury. Everything after is invested.
+        // compute the fee off the top, but do NOT transfer it yet — if the sweep
+        // ends up investing nothing (all legs skipped), no round-up was actually
+        // swept, so no fee is charged and the user gets everything back.
         uint256 fee = (treasury != address(0) && feeBps > 0) ? (amount * feeBps) / 10_000 : 0;
-        if (fee > 0) {
-            if (!stable.transfer(treasury, fee)) revert BadCallback();
-            emit FeeCharged(user, fee);
-        }
         uint256 investable = amount - fee;
 
         uint256 invested;
@@ -267,15 +265,25 @@ contract DustSweeper {
             }
         }
 
-        // return everything not invested (skipped legs + partial-fill dust) to
-        // the user's withdrawable accrued balance. Sweeper keeps nothing:
-        // amount = fee + invested + leftover.
+        // settle. If nothing invested, charge no fee and return the whole amount.
+        // Otherwise take the fee and return the uninvested remainder. Either way
+        // the sweeper keeps nothing: amount = fee + invested + leftover.
+        if (invested == 0) {
+            if (!stable.transfer(address(vault), amount)) revert BadCallback();
+            vault.reaccrue(user, amount);
+            emit Swept(user, amount, 0, amount);
+            return;
+        }
+        if (fee > 0) {
+            if (!stable.transfer(treasury, fee)) revert BadCallback();
+            emit FeeCharged(user, fee);
+        }
         uint256 leftover = investable - invested;
         if (leftover > 0) {
             if (!stable.transfer(address(vault), leftover)) revert BadCallback();
             vault.reaccrue(user, leftover);
         }
-        emit Swept(user, amount, invested, leftover);
+        emit Swept(user, amount, invested, fee + leftover);
     }
 
     /// One basket leg, isolated behind an external self-call so try/catch can
