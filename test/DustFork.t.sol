@@ -34,34 +34,42 @@ contract DustForkTest is Test {
     function setUp() public {
         vault = new DustVault(IERC20(USDC));
         router = new DustRouter(IERC20(USDC), IDustVault(address(vault)), UNIT);
+        sweeper = new DustSweeper(IERC20(USDC), IDustVault(address(vault)));
 
-        DustSweeper.BasketLeg[] memory legs = new DustSweeper.BasketLeg[](5);
-        legs[0] = DustSweeper.BasketLeg(TSLA, P_TSLA, 2_000);
-        legs[1] = DustSweeper.BasketLeg(AMZN, P_AMZN, 2_000);
-        legs[2] = DustSweeper.BasketLeg(PLTR, P_PLTR, 2_000);
-        legs[3] = DustSweeper.BasketLeg(NFLX, P_NFLX, 2_000);
-        legs[4] = DustSweeper.BasketLeg(AMD, P_AMD, 2_000);
-        sweeper = new DustSweeper(IERC20(USDC), IDustVault(address(vault)), 1 days, legs);
+        // owner curates the menu of buyable stocks
+        sweeper.listStock(TSLA, P_TSLA);
+        sweeper.listStock(AMZN, P_AMZN);
+        sweeper.listStock(PLTR, P_PLTR);
+        sweeper.listStock(NFLX, P_NFLX);
+        sweeper.listStock(AMD, P_AMD);
 
         vault.setModules(address(router), address(sweeper));
         deal(USDC, alice, 1_000e18);
     }
 
-    function _minOuts(uint256 v) internal pure returns (uint256[] memory m) {
+    /// Give alice an equal-weight 5-stock basket (the old default), returns minOuts.
+    function _equalBasket() internal returns (uint256[] memory m) {
+        address[] memory toks = new address[](5);
+        uint16[] memory wts = new uint16[](5);
+        toks[0] = TSLA; toks[1] = AMZN; toks[2] = PLTR; toks[3] = NFLX; toks[4] = AMD;
+        for (uint256 i; i < 5; i++) wts[i] = 2_000;
+        vm.prank(alice);
+        sweeper.setBasket(toks, wts);
         m = new uint256[](5);
-        for (uint256 i; i < 5; i++) m[i] = v;
+        for (uint256 i; i < 5; i++) m[i] = 1;
     }
 
-    /// The core product flow: swap 137.42, round up to 140, sweep, hold basket.
+    /// The core product flow: swap 137.42, round up to 140, sweep into alice's
+    /// own basket, hold it, withdraw a leg.
     function test_endToEnd_swapRoundUpSweepWithdraw() public {
+        uint256[] memory minOuts = _equalBasket();
+
         vm.startPrank(alice);
         IERC20(USDC).approve(address(router), type(uint256).max);
-
         (uint256 tslaOut, uint256 roundUp) =
             router.swapWithRoundUp(P_TSLA, TSLA, 137.42e18, 1, 5, 1);
         vm.stopPrank();
 
-        // she got her TSLA and her change was banked
         assertGt(tslaOut, 0, "no TSLA from swap");
         assertEq(IERC20(TSLA).balanceOf(alice), tslaOut);
         assertEq(roundUp, 2.58e18, "wrong round-up");
@@ -69,10 +77,8 @@ contract DustForkTest is Test {
         assertEq(IERC20(USDC).balanceOf(address(vault)), 2.58e18, "round-up not in vault");
         assertEq(IERC20(USDC).balanceOf(address(router)), 0, "router must hold nothing");
 
-        // sweep her 2.58 into the 5-stock basket (self-sweep)
-        uint256[] memory minOuts = _minOuts(1);
         vm.prank(alice);
-        sweeper.sweep(alice, minOuts, 0);
+        sweeper.sweep(alice, minOuts, 1); // basketNonce is 1 after setBasket
 
         assertEq(vault.accruedStable(alice), 0, "full fill should leave nothing accrued");
         assertEq(vault.costBasis(alice), 2.58e18);
@@ -80,19 +86,88 @@ contract DustForkTest is Test {
         for (uint256 i; i < 5; i++) {
             uint256 bal = vault.tokenBalanceOf(alice, toks[i]);
             assertGt(bal, 0, "basket leg empty");
-            // vault actually holds what it credits
             assertGe(IERC20(toks[i]).balanceOf(address(vault)), bal, "vault underfunded");
         }
         assertEq(IERC20(USDC).balanceOf(address(sweeper)), 0, "sweeper must hold nothing");
 
-        // withdraw one leg in kind
         uint256 amzn = vault.tokenBalanceOf(alice, AMZN);
         vm.prank(alice);
         vault.withdrawToken(AMZN, amzn, alice);
         assertEq(IERC20(AMZN).balanceOf(alice), amzn);
     }
 
+    /// The headline of the redesign: the user's OWN weights decide what gets
+    /// bought. Alice picks a 2-stock 60/40 basket; only those two fill, in ratio.
+    function test_customBasketDrivesTheBuy() public {
+        address[] memory toks = new address[](2);
+        uint16[] memory wts = new uint16[](2);
+        toks[0] = TSLA; wts[0] = 6_000;
+        toks[1] = AMD;  wts[1] = 4_000;
+        vm.prank(alice);
+        sweeper.setBasket(toks, wts);
+
+        vm.startPrank(alice);
+        IERC20(USDC).approve(address(router), type(uint256).max);
+        router.swapWithRoundUp(P_TSLA, TSLA, 85e18, 1, 10, 1); // 85 -> round up to 90 -> 5.00 change
+        vm.stopPrank();
+        assertEq(vault.accruedStable(alice), 5e18);
+
+        uint256[] memory minOuts = new uint256[](2);
+        minOuts[0] = 1; minOuts[1] = 1;
+        vm.prank(alice);
+        sweeper.sweep(alice, minOuts, 1);
+
+        // only TSLA and AMD bought; the other three menu stocks untouched
+        assertGt(vault.tokenBalanceOf(alice, TSLA), 0);
+        assertGt(vault.tokenBalanceOf(alice, AMD), 0);
+        assertEq(vault.tokenBalanceOf(alice, AMZN), 0, "AMZN not in her basket");
+        assertEq(vault.tokenBalanceOf(alice, PLTR), 0);
+        assertEq(vault.tokenBalanceOf(alice, NFLX), 0);
+        // she spent her full 5 across the two legs (3 + 2)
+        assertEq(vault.costBasis(alice), 5e18);
+        assertEq(vault.accruedStable(alice), 0);
+    }
+
+    /// Two users, two different baskets, from the same shared menu.
+    function test_twoUsersDifferentBaskets() public {
+        // alice: 100% TSLA
+        address[] memory aT = new address[](1);
+        uint16[] memory aW = new uint16[](1);
+        aT[0] = TSLA; aW[0] = 10_000;
+        vm.prank(alice);
+        sweeper.setBasket(aT, aW);
+
+        // bob: 100% NFLX
+        address bob2 = makeAddr("bob2");
+        deal(USDC, bob2, 1_000e18);
+        address[] memory bT = new address[](1);
+        uint16[] memory bW = new uint16[](1);
+        bT[0] = NFLX; bW[0] = 10_000;
+        vm.prank(bob2);
+        sweeper.setBasket(bT, bW);
+
+        // both trade + sweep
+        uint256[] memory one = new uint256[](1);
+        one[0] = 1;
+        vm.startPrank(alice);
+        IERC20(USDC).approve(address(router), type(uint256).max);
+        router.swapWithRoundUp(P_TSLA, TSLA, 9.5e18, 1, 1, 1);
+        sweeper.sweep(alice, one, 1);
+        vm.stopPrank();
+        vm.startPrank(bob2);
+        IERC20(USDC).approve(address(router), type(uint256).max);
+        router.swapWithRoundUp(P_NFLX, NFLX, 9.5e18, 1, 1, 1);
+        sweeper.sweep(bob2, one, 1);
+        vm.stopPrank();
+
+        assertGt(vault.tokenBalanceOf(alice, TSLA), 0);
+        assertEq(vault.tokenBalanceOf(alice, NFLX), 0);
+        assertGt(vault.tokenBalanceOf(bob2, NFLX), 0);
+        assertEq(vault.tokenBalanceOf(bob2, TSLA), 0);
+    }
+
     function test_pauseBlocksSweepNotWithdrawals() public {
+        uint256[] memory minOuts = _equalBasket();
         vm.startPrank(alice);
         IERC20(USDC).approve(address(router), type(uint256).max);
         router.swapWithRoundUp(P_TSLA, TSLA, 99.5e18, 1, 1, 1); // 0.50 round-up
@@ -100,10 +175,9 @@ contract DustForkTest is Test {
 
         sweeper.setPaused(true);
 
-        uint256[] memory minOuts = _minOuts(1);
         vm.prank(alice);
         vm.expectRevert(DustSweeper.Paused.selector);
-        sweeper.sweep(alice, minOuts, 0);
+        sweeper.sweep(alice, minOuts, 1);
 
         // withdrawal of accrued stable still works while paused
         vm.prank(alice);
@@ -112,31 +186,31 @@ contract DustForkTest is Test {
     }
 
     function test_strangerCannotSweepForUser() public {
+        uint256[] memory minOuts = _equalBasket();
         vm.startPrank(alice);
         IERC20(USDC).approve(address(router), type(uint256).max);
         router.swapWithRoundUp(P_TSLA, TSLA, 99.5e18, 1, 1, 1);
         vm.stopPrank();
 
         address mallory = makeAddr("mallory");
-        uint256[] memory minOuts = _minOuts(1);
         vm.prank(mallory);
         vm.expectRevert(DustSweeper.NotAuthorized.selector);
-        sweeper.sweep(alice, minOuts, 0);
+        sweeper.sweep(alice, minOuts, 1);
     }
 
     /// A leg whose slippage bound can't be met is SKIPPED (isolated), not fatal:
     /// its stable slice returns to the user's accrued balance, the rest buys.
     function test_tightLegIsSkippedAndReaccrued() public {
+        uint256[] memory minOuts = _equalBasket();
         vm.startPrank(alice);
         IERC20(USDC).approve(address(router), type(uint256).max);
         router.swapWithRoundUp(P_TSLA, TSLA, 99.5e18, 1, 1, 1); // 0.50 round-up
         vm.stopPrank();
 
-        uint256[] memory minOuts = _minOuts(1);
         minOuts[0] = type(uint256).max; // TSLA leg impossible to fill
 
         vm.prank(alice);
-        sweeper.sweep(alice, minOuts, 0);
+        sweeper.sweep(alice, minOuts, 1);
 
         // TSLA leg skipped -> no TSLA credited, its 20% slice re-accrued
         assertEq(vault.tokenBalanceOf(alice, TSLA), 0, "skipped leg must not credit");
@@ -148,23 +222,23 @@ contract DustForkTest is Test {
     }
 
     function test_zeroMinOutRejected() public {
+        uint256[] memory minOuts = _equalBasket();
         vm.startPrank(alice);
         IERC20(USDC).approve(address(router), type(uint256).max);
         router.swapWithRoundUp(P_TSLA, TSLA, 99.5e18, 1, 1, 1);
-        uint256[] memory minOuts = _minOuts(1);
         minOuts[2] = 0; // one zero floor on a funded leg
         vm.expectRevert(DustSweeper.ZeroMinOut.selector);
-        sweeper.sweep(alice, minOuts, 0);
+        sweeper.sweep(alice, minOuts, 1);
         vm.stopPrank();
     }
 
     function test_staleBasketRejected() public {
+        uint256[] memory minOuts = _equalBasket();
         vm.startPrank(alice);
         IERC20(USDC).approve(address(router), type(uint256).max);
         router.swapWithRoundUp(P_TSLA, TSLA, 99.5e18, 1, 1, 1);
-        uint256[] memory minOuts = _minOuts(1);
         vm.expectRevert(DustSweeper.StaleBasket.selector);
-        sweeper.sweep(alice, minOuts, 99); // wrong version
+        sweeper.sweep(alice, minOuts, 99); // wrong nonce
         vm.stopPrank();
     }
 

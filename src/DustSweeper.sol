@@ -4,25 +4,24 @@ pragma solidity ^0.8.24;
 import {IERC20, IV3Pool, IDustVault} from "./interfaces/IDust.sol";
 
 /// @title DustSweeper
-/// @notice Converts users' accrued stable round-ups into the basket.
+/// @notice Converts each user's accrued stable round-ups into THEIR OWN basket.
 ///
-/// Rules of the road:
-///  - The basket is a fixed, published list of (token, pool, weight). Changing
-///    it goes through propose -> timelock delay -> execute, all onchain, and
-///    bumps basketVersion so in-flight sweeps can't be mispriced by a swap.
-///  - Deterministic execution: same accrued amount, same weights, every time.
-///    Nobody at Dust chooses what a sweep buys. Price is bounded by a caller-
-///    supplied minOut that must be non-zero (no "buy at any price").
-///  - Leg isolation: each basket leg is bought in its own isolated call. If a
-///    leg reverts (issuer paused/blocked the token, thin pool, etc.) its stable
-///    is returned to the user's accrued balance instead of bricking the sweep.
-///  - Partial fills credit only the stable actually spent; the remainder is
-///    returned to the user. The sweeper never keeps user stable between txs.
+/// Trust model (stronger than a single global basket):
+///  - The owner curates a MENU of buyable stocks (token -> pool paired with the
+///    stable). That is the only basket-related power the owner has.
+///  - Each user composes their own basket by choosing stocks from the menu and
+///    setting their own weights. The owner cannot change what a user's money
+///    buys — only the user can. There is no discretion over user allocations.
+///  - Deterministic execution: same accrued amount + same user basket -> same
+///    buys, every time. Price is bounded by a caller-supplied nonzero minOut.
+///  - Leg isolation: each leg buys in its own isolated call; a failing leg
+///    (paused/blocked/delisted token, thin pool) is skipped and its stable
+///    returned to the user, never bricking the sweep.
+///  - Partial fills credit only the stable actually spent; the rest is returned.
 ///  - Pausing stops NEW sweeps only. It cannot touch the vault or withdrawals.
 contract DustSweeper {
-    struct BasketLeg {
-        address token;   // stock token
-        address pool;    // v3-style pool paired with `stable`
+    struct Leg {
+        address token;    // stock token (pool looked up from the menu at sweep time)
         uint16 weightBps; // out of 10_000
     }
 
@@ -31,25 +30,28 @@ contract DustSweeper {
 
     IERC20 public immutable stable;
     IDustVault public immutable vault;
-    uint256 public immutable timelockDelay;
 
     address public owner;
     address public pendingOwner;
     address public keeper;
     bool public paused;
     uint256 public minSweepAmount;
-    uint256 public basketVersion;
 
-    BasketLeg[] public basket;
+    // owner-curated menu of buyable stocks: token -> pool (paired with stable)
+    mapping(address => address) public poolFor;
+    address[] public menu;
+    mapping(address => uint256) private menuIndex; // 1-based, 0 = not listed
 
-    BasketLeg[] public pendingBasket;
-    uint256 public pendingEta;
+    // per-user basket + a nonce that bumps whenever the user changes it
+    mapping(address => Leg[]) private _basket;
+    mapping(address => uint256) public basketNonce;
 
     // transient callback guard (plain storage; reset within the same tx)
     address private expectedPool;
 
-    event BasketProposed(uint256 eta);
-    event BasketExecuted(uint256 newVersion);
+    event StockListed(address indexed token, address indexed pool);
+    event StockDelisted(address indexed token);
+    event BasketSet(address indexed user, uint256 nonce, uint256 legs);
     event Swept(address indexed user, uint256 stableIn, uint256 invested, uint256 returned);
     event LegBought(address indexed user, address indexed token, uint256 stableIn, uint256 tokensOut);
     event LegSkipped(address indexed user, address indexed token, uint256 stableSlice);
@@ -61,9 +63,11 @@ contract DustSweeper {
 
     error NotAuthorized();
     error Paused();
+    error BadListing();
+    error AlreadyListed();
+    error NotListed();
     error BadBasket();
-    error TimelockNotReady();
-    error NothingPending();
+    error NoBasket();
     error BelowMinimum();
     error SlippageExceeded();
     error ZeroOutput();
@@ -79,37 +83,86 @@ contract DustSweeper {
         _;
     }
 
-    constructor(IERC20 _stable, IDustVault _vault, uint256 _timelockDelay, BasketLeg[] memory initialBasket) {
+    constructor(IERC20 _stable, IDustVault _vault) {
         stable = _stable;
         vault = _vault;
-        timelockDelay = _timelockDelay;
         owner = msg.sender;
         keeper = msg.sender;
-        _validate(initialBasket);
-        for (uint256 i; i < initialBasket.length; i++) basket.push(initialBasket[i]);
     }
 
-    // ---- admin (enumerated powers, nothing else) ----
+    // ---- menu curation (owner) ----
 
-    function proposeBasket(BasketLeg[] calldata newBasket) external onlyOwner {
-        _validate(newBasket);
-        delete pendingBasket;
-        for (uint256 i; i < newBasket.length; i++) pendingBasket.push(newBasket[i]);
-        pendingEta = block.timestamp + timelockDelay;
-        emit BasketProposed(pendingEta);
+    /// Add a stock to the buyable menu. Validates the pool actually pairs the
+    /// stable with this token (mirrors the router's pairing check).
+    function listStock(address token, address pool) external onlyOwner {
+        if (token == address(0) || pool == address(0)) revert BadListing();
+        if (menuIndex[token] != 0) revert AlreadyListed();
+        address t0 = IV3Pool(pool).token0();
+        address t1 = IV3Pool(pool).token1();
+        bool ok = (t0 == address(stable) && t1 == token) || (t1 == address(stable) && t0 == token);
+        if (!ok) revert BadListing();
+        poolFor[token] = pool;
+        menu.push(token);
+        menuIndex[token] = menu.length; // 1-based
+        emit StockListed(token, pool);
     }
 
-    /// Anyone may execute once the delay has passed — the change was public.
-    function executeBasket() external {
-        if (pendingEta == 0) revert NothingPending();
-        if (block.timestamp < pendingEta) revert TimelockNotReady();
-        delete basket;
-        for (uint256 i; i < pendingBasket.length; i++) basket.push(pendingBasket[i]);
-        delete pendingBasket;
-        pendingEta = 0;
-        unchecked { basketVersion++; }
-        emit BasketExecuted(basketVersion);
+    /// Remove a stock from the menu. Does NOT touch anyone's vault holdings —
+    /// users keep and can withdraw tokens they already own; this only stops new
+    /// buys. A user basket still referencing it will simply skip that leg.
+    function delistStock(address token) external onlyOwner {
+        uint256 idx = menuIndex[token];
+        if (idx == 0) revert NotListed();
+        uint256 last = menu.length;
+        if (idx != last) {
+            address moved = menu[last - 1];
+            menu[idx - 1] = moved;
+            menuIndex[moved] = idx;
+        }
+        menu.pop();
+        menuIndex[token] = 0;
+        poolFor[token] = address(0);
+        emit StockDelisted(token);
     }
+
+    function menuLength() external view returns (uint256) {
+        return menu.length;
+    }
+
+    // ---- per-user basket ----
+
+    /// Compose your basket from the menu. Weights are out of 10_000 and must sum
+    /// to exactly 10_000. Every token must be on the menu. This is the only way
+    /// a user's allocation is ever set — by the user.
+    function setBasket(address[] calldata tokens, uint16[] calldata weights) external {
+        uint256 n = tokens.length;
+        if (n == 0 || n > 20 || weights.length != n) revert BadBasket();
+        delete _basket[msg.sender];
+        uint256 total;
+        for (uint256 i; i < n; i++) {
+            address token = tokens[i];
+            if (poolFor[token] == address(0)) revert NotListed();
+            // reject duplicate tokens within the basket
+            for (uint256 j; j < i; j++) {
+                if (tokens[j] == token) revert BadBasket();
+            }
+            total += weights[i];
+            _basket[msg.sender].push(Leg(token, weights[i]));
+        }
+        if (total != 10_000) revert BadBasket();
+        unchecked { basketNonce[msg.sender]++; }
+        emit BasketSet(msg.sender, basketNonce[msg.sender], n);
+    }
+
+    function basketOf(address user) external view returns (Leg[] memory) {
+        return _basket[user];
+    }
+
+    function basketLengthOf(address user) external view returns (uint256) {
+        return _basket[user].length;
+    }
+
+    // ---- admin (enumerated powers) ----
 
     function setPaused(bool p) external onlyOwner {
         paused = p;
@@ -127,8 +180,6 @@ contract DustSweeper {
         emit MinSweepSet(a);
     }
 
-    /// Two-step ownership transfer: prevents bricking governance on a typo or
-    /// a transfer to a wrong/zero address.
     function transferOwnership(address to) external onlyOwner {
         if (to == address(0)) revert ZeroAddress();
         pendingOwner = to;
@@ -144,19 +195,19 @@ contract DustSweeper {
 
     // ---- sweeping ----
 
-    /// @param user            whose accrued stable to sweep
+    /// @param user            whose accrued stable to sweep into their basket
     /// @param minOuts         per-leg minimum token out; MUST be non-zero for
-    ///                        every leg with a non-zero stable slice. The
-    ///                        caller (user or keeper) is responsible for
-    ///                        quoting these against a fair price.
-    /// @param expectedVersion basketVersion the minOuts were quoted against;
-    ///                        reverts if the basket changed underneath.
-    function sweep(address user, uint256[] calldata minOuts, uint256 expectedVersion) external {
+    ///                        every leg with a non-zero stable slice
+    /// @param expectedNonce   user's basketNonce the minOuts were quoted against
+    function sweep(address user, uint256[] calldata minOuts, uint256 expectedNonce) external {
         if (paused) revert Paused();
         if (msg.sender != user && msg.sender != keeper) revert NotAuthorized();
-        if (expectedVersion != basketVersion) revert StaleBasket();
-        uint256 legs = basket.length;
-        if (minOuts.length != legs) revert LengthMismatch();
+
+        Leg[] storage legs = _basket[user];
+        uint256 n = legs.length;
+        if (n == 0) revert NoBasket();
+        if (expectedNonce != basketNonce[user]) revert StaleBasket();
+        if (minOuts.length != n) revert LengthMismatch();
 
         uint256 amount = vault.accruedStable(user);
         if (amount == 0 || amount < minSweepAmount) revert BelowMinimum();
@@ -164,16 +215,21 @@ contract DustSweeper {
 
         uint256 invested;
         uint256 allocated;
-        for (uint256 i; i < legs; i++) {
-            BasketLeg memory leg = basket[i];
-            uint256 legIn = i == legs - 1 ? amount - allocated : (amount * leg.weightBps) / 10_000;
+        for (uint256 i; i < n; i++) {
+            Leg memory leg = legs[i];
+            uint256 legIn = i == n - 1 ? amount - allocated : (amount * leg.weightBps) / 10_000;
             allocated += legIn;
             if (legIn == 0) continue;
             if (minOuts[i] == 0) revert ZeroMinOut();
 
-            // isolated: a reverting leg (paused/blocked token, thin pool) is
-            // skipped, not fatal. Returns the stable actually consumed.
-            try this.buyLeg(user, leg, legIn, minOuts[i]) returns (uint256 spent) {
+            address pool = poolFor[leg.token];
+            if (pool == address(0)) {
+                // token delisted since the user set their basket -> skip cleanly
+                emit LegSkipped(user, leg.token, legIn);
+                continue;
+            }
+
+            try this.buyLeg(user, leg.token, pool, legIn, minOuts[i]) returns (uint256 spent) {
                 invested += spent;
             } catch {
                 emit LegSkipped(user, leg.token, legIn);
@@ -191,29 +247,24 @@ contract DustSweeper {
     }
 
     /// One basket leg, isolated behind an external self-call so try/catch can
-    /// contain its reverts. Credits the user's vault position and returns the
-    /// stable actually spent (may be < legIn on a partial fill).
-    function buyLeg(address user, BasketLeg calldata leg, uint256 legIn, uint256 minOut)
+    /// contain its reverts. Returns the stable actually spent (< legIn on a
+    /// partial fill).
+    function buyLeg(address user, address token, address pool, uint256 legIn, uint256 minOut)
         external
         returns (uint256 spent)
     {
         if (msg.sender != address(this)) revert OnlySelf();
         uint256 stableBefore = stable.balanceOf(address(this));
 
-        uint256 got = _buy(leg.pool, leg.token, legIn);
+        uint256 got = _buy(pool, token, legIn);
         if (got == 0) revert ZeroOutput();
         if (got < minOut) revert SlippageExceeded();
 
-        // measure what the swap actually consumed (exact-input may partial-fill)
         spent = stableBefore - stable.balanceOf(address(this));
 
-        if (!IERC20(leg.token).transfer(address(vault), got)) revert BadCallback();
-        vault.creditTokens(user, leg.token, got, spent);
-        emit LegBought(user, leg.token, spent, got);
-    }
-
-    function basketLength() external view returns (uint256) {
-        return basket.length;
+        if (!IERC20(token).transfer(address(vault), got)) revert BadCallback();
+        vault.creditTokens(user, token, got, spent);
+        emit LegBought(user, token, spent, got);
     }
 
     // ---- internals ----
@@ -250,25 +301,5 @@ contract DustSweeper {
     /// Robinhood Chain testnet pools are a Synthra v3 fork with a renamed callback.
     function synthraV3SwapCallback(int256 a0, int256 a1, bytes calldata data) external {
         _payPool(a0, a1, data);
-    }
-
-    /// Validate a basket: non-zero entries, count 1..20, weights sum to 10_000,
-    /// and every pool actually pairs `stable` with that leg's token.
-    function _validate(BasketLeg[] memory b) internal view {
-        uint256 n = b.length;
-        if (n == 0 || n > 20) revert BadBasket();
-        uint256 total;
-        for (uint256 i; i < n; i++) {
-            BasketLeg memory leg = b[i];
-            if (leg.token == address(0) || leg.pool == address(0)) revert BadBasket();
-            total += leg.weightBps;
-            address t0 = IV3Pool(leg.pool).token0();
-            address t1 = IV3Pool(leg.pool).token1();
-            // exactly one side is the stable, the other is the leg's token
-            bool ok = (t0 == address(stable) && t1 == leg.token)
-                || (t1 == address(stable) && t0 == leg.token);
-            if (!ok) revert BadBasket();
-        }
-        if (total != 10_000) revert BadBasket();
     }
 }
