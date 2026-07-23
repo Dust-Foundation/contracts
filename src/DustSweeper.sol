@@ -31,9 +31,15 @@ contract DustSweeper {
     IERC20 public immutable stable;
     IDustVault public immutable vault;
 
+    /// Fee is a percentage of each round-up, skimmed at sweep time to the
+    /// treasury. Hard-capped in code so no owner can ever set a predatory rate.
+    uint16 public constant MAX_FEE_BPS = 500; // 5% ceiling, immutable
+
     address public owner;
     address public pendingOwner;
     address public keeper;
+    address public treasury;
+    uint16 public feeBps = 100; // 1% at launch
     bool public paused;
     uint256 public minSweepAmount;
 
@@ -58,6 +64,9 @@ contract DustSweeper {
     event PausedSet(bool paused);
     event KeeperSet(address keeper);
     event MinSweepSet(uint256 amount);
+    event TreasurySet(address treasury);
+    event FeeSet(uint16 feeBps);
+    event FeeCharged(address indexed user, uint256 amount);
     event OwnershipTransferStarted(address indexed from, address indexed to);
     event OwnershipTransferred(address indexed from, address indexed to);
 
@@ -77,17 +86,20 @@ contract DustSweeper {
     error StaleBasket();
     error ZeroAddress();
     error OnlySelf();
+    error FeeTooHigh();
+    error NoTreasury();
 
     modifier onlyOwner() {
         if (msg.sender != owner) revert NotAuthorized();
         _;
     }
 
-    constructor(IERC20 _stable, IDustVault _vault) {
+    constructor(IERC20 _stable, IDustVault _vault, address _treasury) {
         stable = _stable;
         vault = _vault;
         owner = msg.sender;
         keeper = msg.sender;
+        treasury = _treasury; // may be zero at deploy; fee is skipped until set
     }
 
     // ---- menu curation (owner) ----
@@ -180,6 +192,17 @@ contract DustSweeper {
         emit MinSweepSet(a);
     }
 
+    function setTreasury(address t) external onlyOwner {
+        treasury = t;
+        emit TreasurySet(t);
+    }
+
+    function setFeeBps(uint16 bps) external onlyOwner {
+        if (bps > MAX_FEE_BPS) revert FeeTooHigh();
+        feeBps = bps;
+        emit FeeSet(bps);
+    }
+
     function transferOwnership(address to) external onlyOwner {
         if (to == address(0)) revert ZeroAddress();
         pendingOwner = to;
@@ -213,11 +236,19 @@ contract DustSweeper {
         if (amount == 0 || amount < minSweepAmount) revert BelowMinimum();
         vault.debitAccrued(user, amount); // sweeper now holds `amount` stable
 
+        // skim the fee off the top, to the treasury. Everything after is invested.
+        uint256 fee = (treasury != address(0) && feeBps > 0) ? (amount * feeBps) / 10_000 : 0;
+        if (fee > 0) {
+            if (!stable.transfer(treasury, fee)) revert BadCallback();
+            emit FeeCharged(user, fee);
+        }
+        uint256 investable = amount - fee;
+
         uint256 invested;
         uint256 allocated;
         for (uint256 i; i < n; i++) {
             Leg memory leg = legs[i];
-            uint256 legIn = i == n - 1 ? amount - allocated : (amount * leg.weightBps) / 10_000;
+            uint256 legIn = i == n - 1 ? investable - allocated : (investable * leg.weightBps) / 10_000;
             allocated += legIn;
             if (legIn == 0) continue;
             if (minOuts[i] == 0) revert ZeroMinOut();
@@ -237,8 +268,9 @@ contract DustSweeper {
         }
 
         // return everything not invested (skipped legs + partial-fill dust) to
-        // the user's withdrawable accrued balance. Sweeper keeps nothing.
-        uint256 leftover = amount - invested;
+        // the user's withdrawable accrued balance. Sweeper keeps nothing:
+        // amount = fee + invested + leftover.
+        uint256 leftover = investable - invested;
         if (leftover > 0) {
             if (!stable.transfer(address(vault), leftover)) revert BadCallback();
             vault.reaccrue(user, leftover);

@@ -30,11 +30,12 @@ contract DustForkTest is Test {
     DustRouter router;
     DustSweeper sweeper;
     address alice = makeAddr("alice");
+    address treasury = makeAddr("treasury");
 
     function setUp() public {
         vault = new DustVault(IERC20(USDC));
         router = new DustRouter(IERC20(USDC), IDustVault(address(vault)), UNIT);
-        sweeper = new DustSweeper(IERC20(USDC), IDustVault(address(vault)));
+        sweeper = new DustSweeper(IERC20(USDC), IDustVault(address(vault)), treasury);
 
         // owner curates the menu of buyable stocks
         sweeper.listStock(TSLA, P_TSLA);
@@ -44,6 +45,7 @@ contract DustForkTest is Test {
         sweeper.listStock(AMD, P_AMD);
 
         vault.setModules(address(router), address(sweeper));
+        sweeper.setFeeBps(0); // most tests exercise mechanics fee-free; fee has its own test
         deal(USDC, alice, 1_000e18);
     }
 
@@ -126,6 +128,32 @@ contract DustForkTest is Test {
         // she spent her full 5 across the two legs (3 + 2)
         assertEq(vault.costBasis(alice), 5e18);
         assertEq(vault.accruedStable(alice), 0);
+    }
+
+    /// Fee: 1% of the round-up is skimmed to the treasury; 99% invested.
+    function test_feeSkimmedToTreasury() public {
+        sweeper.setFeeBps(100); // 1%
+        uint256[] memory minOuts = _equalBasket();
+
+        vm.startPrank(alice);
+        IERC20(USDC).approve(address(router), type(uint256).max);
+        router.swapWithRoundUp(P_TSLA, TSLA, 97e18, 1, 10, 1); // -> round up to 100 -> 3.00 change
+        vm.stopPrank();
+        assertEq(vault.accruedStable(alice), 3e18);
+
+        vm.prank(alice);
+        sweeper.sweep(alice, minOuts, 1);
+
+        // 1% of 3.00 = 0.03 to treasury; 2.97 invested (cost basis)
+        assertEq(IERC20(USDC).balanceOf(treasury), 0.03e18, "treasury fee");
+        assertEq(vault.costBasis(alice), 2.97e18, "99% invested");
+        assertEq(vault.accruedStable(alice), 0);
+        assertEq(IERC20(USDC).balanceOf(address(sweeper)), 0, "sweeper holds nothing");
+    }
+
+    function test_feeCappedInCode() public {
+        vm.expectRevert(DustSweeper.FeeTooHigh.selector);
+        sweeper.setFeeBps(501); // > MAX_FEE_BPS (5%)
     }
 
     /// Two users, two different baskets, from the same shared menu.

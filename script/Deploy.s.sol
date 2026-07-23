@@ -29,7 +29,8 @@ contract Deploy is Script {
         vm.startBroadcast();
         DustVault vault = new DustVault(IERC20(USDC));
         DustRouter router = new DustRouter(IERC20(USDC), IDustVault(address(vault)), 1e18);
-        DustSweeper sweeper = new DustSweeper(IERC20(USDC), IDustVault(address(vault)));
+        // treasury = deployer for testnet; on mainnet this is the fee multisig
+        DustSweeper sweeper = new DustSweeper(IERC20(USDC), IDustVault(address(vault)), msg.sender);
         // curate the menu of buyable stocks; users compose their own baskets from it
         sweeper.listStock(TSLA, P_TSLA);
         sweeper.listStock(AMZN, P_AMZN);

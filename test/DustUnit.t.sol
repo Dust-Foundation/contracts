@@ -63,6 +63,7 @@ contract DustUnitTest is Test {
     uint256 constant UNIT = 1e18;
     address alice = makeAddr("alice");
     address bob = makeAddr("bob");
+    address treasury = makeAddr("treasury");
 
     function setUp() public {
         stable = new MockERC20("USDG", 18);
@@ -167,7 +168,7 @@ contract DustUnitTest is Test {
     // ---- sweeper config ----
 
     function _newSweeper() internal returns (DustSweeper) {
-        return new DustSweeper(IERC20(address(stable)), IDustVault(address(vault)));
+        return new DustSweeper(IERC20(address(stable)), IDustVault(address(vault)), treasury);
     }
 
     function _list(DustSweeper s, string memory sym) internal returns (address token) {
@@ -268,6 +269,22 @@ contract DustUnitTest is Test {
         vm.prank(alice);
         vm.expectRevert(DustSweeper.NoBasket.selector);
         s.sweep(alice, minOuts, 0);
+    }
+
+    function test_sweeper_feeConfig() public {
+        DustSweeper s = _newSweeper();
+        assertEq(s.feeBps(), 100, "1% default");
+        assertEq(s.treasury(), treasury);
+        assertEq(s.MAX_FEE_BPS(), 500);
+
+        s.setFeeBps(250);
+        assertEq(s.feeBps(), 250);
+        vm.expectRevert(DustSweeper.FeeTooHigh.selector);
+        s.setFeeBps(501);
+
+        vm.prank(alice);
+        vm.expectRevert(DustSweeper.NotAuthorized.selector);
+        s.setFeeBps(100);
     }
 
     function test_sweeper_twoStepOwnership() public {
