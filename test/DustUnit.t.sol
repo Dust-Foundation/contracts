@@ -70,7 +70,7 @@ contract DustUnitTest is Test {
         vault = new DustVault(IERC20(address(stable)));
         router = new DustRouter(IERC20(address(stable)), IDustVault(address(vault)), UNIT);
         // sweeper not needed for unit tests of vault/router surfaces; wire a stub
-        vault.setModules(address(router), address(this));
+        vault.setModules(address(router), address(this), address(0));
     }
 
     // ---- round-up math ----
@@ -120,7 +120,7 @@ contract DustUnitTest is Test {
 
     function test_vault_modulesSetOnce() public {
         vm.expectRevert(DustVault.AlreadySet.selector);
-        vault.setModules(address(1), address(2));
+        vault.setModules(address(1), address(2), address(0));
     }
 
     function testFuzz_vault_accrueWithdraw(uint96 a, uint96 b) public {

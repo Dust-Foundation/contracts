@@ -5,6 +5,7 @@ import {Script, console2} from "forge-std/Script.sol";
 import {DustVault} from "../src/DustVault.sol";
 import {DustRouter} from "../src/DustRouter.sol";
 import {DustSweeper} from "../src/DustSweeper.sol";
+import {DustCapture, IKeeperSource} from "../src/DustCapture.sol";
 import {IERC20, IDustVault} from "../src/interfaces/IDust.sol";
 
 /// Deploy-only: the hardened trio + wiring, no demo flow. Prints addresses for
@@ -37,11 +38,14 @@ contract Deploy is Script {
         sweeper.listStock(PLTR, P_PLTR);
         sweeper.listStock(NFLX, P_NFLX);
         sweeper.listStock(AMD, P_AMD);
-        vault.setModules(address(router), address(sweeper));
+        DustCapture capture =
+            new DustCapture(IERC20(USDC), IDustVault(address(vault)), IKeeperSource(address(sweeper)));
+        vault.setModules(address(router), address(sweeper), address(capture));
 
         console2.log("DUST_VAULT=%s", address(vault));
         console2.log("DUST_ROUTER=%s", address(router));
         console2.log("DUST_SWEEPER=%s", address(sweeper));
+        console2.log("DUST_CAPTURE=%s", address(capture));
         vm.stopBroadcast();
     }
 }

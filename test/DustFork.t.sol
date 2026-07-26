@@ -5,6 +5,7 @@ import {Test, console2} from "forge-std/Test.sol";
 import {DustVault} from "../src/DustVault.sol";
 import {DustRouter} from "../src/DustRouter.sol";
 import {DustSweeper} from "../src/DustSweeper.sol";
+import {DustCapture, IKeeperSource} from "../src/DustCapture.sol";
 import {IERC20, IDustVault} from "../src/interfaces/IDust.sol";
 
 /// End-to-end against live Robinhood Chain testnet state.
@@ -29,6 +30,7 @@ contract DustForkTest is Test {
     DustVault vault;
     DustRouter router;
     DustSweeper sweeper;
+    DustCapture capture;
     address alice = makeAddr("alice");
     address treasury = makeAddr("treasury");
 
@@ -36,6 +38,7 @@ contract DustForkTest is Test {
         vault = new DustVault(IERC20(USDC));
         router = new DustRouter(IERC20(USDC), IDustVault(address(vault)), UNIT);
         sweeper = new DustSweeper(IERC20(USDC), IDustVault(address(vault)), treasury);
+        capture = new DustCapture(IERC20(USDC), IDustVault(address(vault)), IKeeperSource(address(sweeper)));
 
         // owner curates the menu of buyable stocks
         sweeper.listStock(TSLA, P_TSLA);
@@ -44,7 +47,7 @@ contract DustForkTest is Test {
         sweeper.listStock(NFLX, P_NFLX);
         sweeper.listStock(AMD, P_AMD);
 
-        vault.setModules(address(router), address(sweeper));
+        vault.setModules(address(router), address(sweeper), address(capture));
         sweeper.setFeeBps(0); // most tests exercise mechanics fee-free; fee has its own test
         deal(USDC, alice, 1_000e18);
     }
@@ -128,6 +131,30 @@ contract DustForkTest is Test {
         // she spent her full 5 across the two legs (3 + 2)
         assertEq(vault.costBasis(alice), 5e18);
         assertEq(vault.accruedStable(alice), 0);
+    }
+
+
+    /// Outside-transaction capture: alice opts in with a weekly cap + a wallet
+    /// allowance; the keeper (this test, as sweeper.keeper) pulls an observed
+    /// round-up into her vault, then it sweeps into her basket like any other.
+    function test_outsideCaptureFlowsIntoBasket() public {
+        uint256[] memory minOuts = _equalBasket();
+
+        vm.startPrank(alice);
+        capture.setWeeklyCap(5e18);
+        IERC20(USDC).approve(address(capture), 5e18);
+        vm.stopPrank();
+
+        // keeper observed alice spend 3.40 outside -> 0.60 round-up
+        capture.captureFor(alice, 0.6e18);
+        assertEq(vault.accruedStable(alice), 0.6e18);
+        assertEq(capture.remainingThisWeek(alice), 4.4e18);
+
+        // and it sweeps into her basket exactly like an in-app round-up
+        sweeper.sweep(alice, minOuts, 1); // test contract is keeper
+        assertEq(vault.accruedStable(alice), 0);
+        assertEq(vault.costBasis(alice), 0.6e18);
+        assertGt(vault.tokenBalanceOf(alice, AMZN), 0);
     }
 
     /// Fee: 1% of the round-up is skimmed to the treasury; 99% invested.

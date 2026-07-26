@@ -21,13 +21,14 @@ contract DustVault {
     address public owner;
     address public router;
     address public sweeper;
+    address public capture;
 
     mapping(address => uint256) public accruedStable;
     mapping(address => mapping(address => uint256)) public tokenBalance;
     /// total stable ever swept into the basket per user (cost basis, 6/18-dec stable units)
     mapping(address => uint256) public costBasis;
 
-    event ModulesSet(address router, address sweeper);
+    event ModulesSet(address router, address sweeper, address capture);
     event Accrued(address indexed user, uint256 amount);
     event AccruedDebited(address indexed user, uint256 amount);
     event TokensCredited(address indexed user, address indexed token, uint256 tokenAmount, uint256 stableSpent);
@@ -46,21 +47,25 @@ contract DustVault {
     }
 
     /// One-shot wiring. After this, the owner has no remaining powers here.
-    function setModules(address _router, address _sweeper) external {
+    /// `_capture` is the outside-transaction capture module (may be zero if
+    /// deployed without one).
+    function setModules(address _router, address _sweeper, address _capture) external {
         if (msg.sender != owner) revert NotAuthorized();
         if (router != address(0) || sweeper != address(0)) revert AlreadySet();
         if (_router == address(0) || _sweeper == address(0)) revert ZeroAddress();
         router = _router;
         sweeper = _sweeper;
-        emit ModulesSet(_router, _sweeper);
+        capture = _capture;
+        emit ModulesSet(_router, _sweeper, _capture);
     }
 
     // ---- module surface ----
 
-    /// Router credits a user's round-up. Stable must already have been
-    /// transferred to this vault in the same transaction (router does the pull).
+    /// Router (in-app round-ups) or the capture module (outside-transaction
+    /// round-ups) credits a user. Stable must already have been transferred to
+    /// this vault in the same transaction (the caller does the pull).
     function accrue(address user, uint256 amount) external {
-        if (msg.sender != router) revert NotAuthorized();
+        if (msg.sender != router && (capture == address(0) || msg.sender != capture)) revert NotAuthorized();
         accruedStable[user] += amount;
         emit Accrued(user, amount);
     }
