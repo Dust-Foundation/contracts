@@ -13,6 +13,8 @@ contract Fund is Script {
     address constant AMZN = 0x5884aD2f920c162CFBbACc88C9C51AA75eC09E02;
     address constant P_TSLA = 0xFfEf1147c3724a19AB7328F4e361C049ba452dA9;
     address constant P_AMZN = 0x0A837200fB77687ba9b749E5174bd9a09E51286A;
+    address constant AMD = 0x71178BAc73cBeb415514eB542a8995b82669778d;
+    address constant P_AMD = 0xae12d50f75ea3f4Cf983Af1272614754e7F5e813;
     ComposabilityProbe constant probe = ComposabilityProbe(0xC6D1b72036195d943d6f14dFbF1fb9Dc3A7a2Ca8);
 
     address constant DEST = 0x099950d73746429fC855cFCFe5e33B514d46dcc6;
@@ -21,9 +23,9 @@ contract Fund is Script {
         vm.startBroadcast();
         address me = msg.sender;
 
-        address[2] memory toks = [TSLA, AMZN];
-        address[2] memory pools = [P_TSLA, P_AMZN];
-        for (uint256 i; i < 2; i++) {
+        address[3] memory toks = [TSLA, AMZN, AMD];
+        address[3] memory pools = [P_TSLA, P_AMZN, P_AMD];
+        for (uint256 i; i < 3; i++) {
             uint256 bal = IERC20(toks[i]).balanceOf(me);
             if (bal == 0) continue;
             IERC20(toks[i]).transfer(address(probe), bal);
@@ -38,10 +40,6 @@ contract Fund is Script {
         IERC20(USDC).transfer(DEST, sendUsdc);
         console2.log("sent USDC:", sendUsdc);
 
-        // send gas ETH
-        (bool ok,) = DEST.call{value: 0.003 ether}("");
-        require(ok, "eth send failed");
-        console2.log("sent ETH: 0.003");
 
         vm.stopBroadcast();
     }
