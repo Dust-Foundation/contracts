@@ -105,6 +105,37 @@ contract DustUnitTest is Test {
         router.roundUpAmount(1e18, g, m);
     }
 
+    // ---- USDG readiness: the same math at 6 decimals (mainnet stable) ----
+
+    function test_roundUp_sixDecimalStable() public {
+        MockERC20 usdg = new MockERC20("USDG", 6);
+        DustVault v6 = new DustVault(IERC20(address(usdg)));
+        DustRouter r6 = new DustRouter(IERC20(address(usdg)), IDustVault(address(v6)), 1e6);
+
+        // 137.42 USDG at 6 decimals
+        assertEq(r6.roundUpAmount(137_420_000, 1, 1), 580_000);      // -> 0.58
+        assertEq(r6.roundUpAmount(137_420_000, 5, 1), 2_580_000);    // -> 2.58
+        assertEq(r6.roundUpAmount(137_420_000, 1, 2), 1_160_000);    // 2x boost
+        assertEq(r6.roundUpAmount(140_000_000, 5, 1), 0);            // exact multiple
+        // a sub-cent amount still rounds correctly
+        assertEq(r6.roundUpAmount(999_999, 1, 1), 1);                // 0.999999 -> 1.000000
+    }
+
+    function testFuzz_roundUp_sixDecimals(uint256 amountIn, uint8 gRaw, uint8 mRaw) public {
+        MockERC20 usdg = new MockERC20("USDG", 6);
+        DustVault v6 = new DustVault(IERC20(address(usdg)));
+        DustRouter r6 = new DustRouter(IERC20(address(usdg)), IDustVault(address(v6)), 1e6);
+
+        uint256 g = bound(uint256(gRaw), 1, 100);
+        uint256 m = bound(uint256(mRaw), 1, 10);
+        amountIn = bound(amountIn, 1, 1e18); // up to a trillion USDG
+
+        uint256 r = r6.roundUpAmount(amountIn, g, m);
+        uint256 step = g * 1e6;
+        assertLt(r, step * m);
+        if (r > 0) assertEq((amountIn + r / m) % step, 0);
+    }
+
     // ---- vault accounting ----
 
     function test_vault_onlyModulesCanMutate() public {
