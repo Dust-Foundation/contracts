@@ -134,7 +134,7 @@ Only addresses marked verified were confirmed on-chain; treat anything else as n
 
 ## Dust contracts v1 (deployed 2026-09-03, chain 4663) - DEPRECATED
 
-Superseded by the v2 set below (DustCapture v2 with USDG, WETH and ETH-float funding; DustVault.setModules is one-shot, so all four were redeployed). The v1 vault was empty when abandoned. The v1 sweeper is paused for sweeps (MAINNET-REDEPLOY.md A6); withdrawals from the v1 vault keep working forever. Do not point the keeper or the app at these addresses. Kept here so nobody mistakes them for live.
+Superseded by the v2 set below (DustCapture v2 with USDG, WETH and ETH-float funding; DustVault.setModules is one-shot, so all four were redeployed). The v1 vault was empty when abandoned. The v1 sweeper can be paused (MAINNET-REDEPLOY.md A6), not required since the vault is empty; withdrawals from the v1 vault keep working forever. Do not point the keeper or the app at these addresses. Kept here so nobody mistakes them for live.
 
 | Contract | Address |
 |---|---|
@@ -149,25 +149,25 @@ Superseded by the v2 set below (DustCapture v2 with USDG, WETH and ETH-float fun
 - Keeper: 0x2A08Fb9EFdc0cD8eC6384107F3eA0A97454abFdD
 - Fee: 100 bps. Menu: TSLA, NVDA, AAPL, AMZN, SPY (pools as listed above). Deploy block range 0x332c5a3-0x332c618. minSweepAmount 0.
 
-## Dust contracts v2 (Capture v2; deployed <YYYY-MM-DD>, chain 4663)
+## Dust contracts v2 (Capture v2; deployed 2026-09-03, chain 4663)
 
-Fill in from MAINNET-REDEPLOY.md B4 right after the broadcast. Deployed from script/Deploy.s.sol (mainnet path). Live addresses for the keeper (Fly secrets DUST_VAULT/DUST_ROUTER/DUST_SWEEPER/DUST_CAPTURE) and the app (Vercel NEXT_PUBLIC_DUST_VAULT/ROUTER/SWEEPER/CAPTURE).
+Deployed from script/Deploy.s.sol (mainnet path). Live addresses for the keeper (Fly secrets DUST_VAULT/DUST_ROUTER/DUST_SWEEPER/DUST_CAPTURE) and the app (Vercel NEXT_PUBLIC_DUST_VAULT/ROUTER/SWEEPER/CAPTURE).
 
 | Contract | Address |
 |---|---|
-| DustVault | 0x<fill after deploy> |
-| DustRouter | 0x<fill after deploy> |
-| DustSweeper | 0x<fill after deploy> |
-| DustCapture (v2; constructor (stable, vault, sweeper, weth, ethPool)) | 0x<fill after deploy> |
+| DustVault | 0xC6d3FCA5aa8274c03d015d914ae102f3FF344137 |
+| DustRouter | 0x6A2A77F4ccb7ca9d5Af36EDb8491Af201bF209b3 |
+| DustSweeper | 0x6FE03c5aE5aACCAdCde8fe004F5c543Abeb63899 |
+| DustCapture (v2; constructor (stable, vault, sweeper, weth, ethPool)) | 0xc33e4EB6099bd96127D6016E9EdE1234d3a69406 |
 
 - Stable: USDG 0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168 (unit 1e6)
 - WETH (capture.weth()): 0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73
 - ETH pool (capture.ethPool()): WETH/USDG 0.01% 0x52e65B17fB6E5BA00Ed806f37Afcd2DaA50271Ca, token0 = WETH, observation cardinality 2500
 - Capture bounds (constants): MAX_SLIPPAGE_BPS 200 (TWAP + 2%), TWAP_WINDOW 600 s, WEEK 604800 s
-- Deployer: 0x<fill>
-- Owner: 0x<fill> (interim deployer, or the Safe once acceptOwnership has run)
-- Treasury: 0x<fill>
+- Deployer: 0xc1a4b14232d1deFeAf2D0C018a504dDeb0ab5d2b
+- Owner: 0xc1a4b14232d1deFeAf2D0C018a504dDeb0ab5d2b (interim deployer, or the Safe once acceptOwnership has run)
+- Treasury: 0xc1a4b14232d1deFeAf2D0C018a504dDeb0ab5d2b (interim, same as deployer)
 - Keeper: 0x2A08Fb9EFdc0cD8eC6384107F3eA0A97454abFdD (unchanged from v1)
-- Fee: 100 bps. Menu: TSLA, NVDA, AAPL, AMZN, SPY (pools as listed above). minSweepAmount: <fill, set in MAINNET-REDEPLOY.md E6>.
-- Deploy block range: <fill>. Tx hashes: see broadcast/Deploy.s.sol/4663/run-latest.json.
+- Fee: 100 bps. Menu: TSLA, NVDA, AAPL, AMZN, SPY (pools as listed above). minSweepAmount: 0 on-chain (the keeper-side DUST_MIN_SWEEP floor applies).
+- Deploy blocks 53708685 to 53708895. Tx hashes: see broadcast/Deploy.s.sol/4663/run-latest.json.
 - Blockscout verification: <verified / pending> for each of the four.
