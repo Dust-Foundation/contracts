@@ -6,10 +6,15 @@ import {DustVault} from "../src/DustVault.sol";
 import {DustRouter} from "../src/DustRouter.sol";
 import {DustSweeper} from "../src/DustSweeper.sol";
 import {DustCapture, IKeeperSource} from "../src/DustCapture.sol";
-import {IERC20, IDustVault} from "../src/interfaces/IDust.sol";
+import {IERC20, IWETH, IV3Pool, IDustVault} from "../src/interfaces/IDust.sol";
+import {MockWETH, MockV3Pool} from "./mocks/CaptureMocks.sol";
 
-/// End-to-end against live Robinhood Chain testnet state.
-/// Run: forge test --fork-url robinhood_testnet --match-contract DustForkTest -vv
+/// End-to-end against live Robinhood Chain testnet state (46630).
+/// Run: forge test --match-contract DustForkTest -vv
+/// The suite forks the `robinhood_testnet` endpoint from foundry.toml itself.
+/// If the RPC is unreachable or the testnet contracts are gone, it is skipped
+/// with a reason rather than failed, so the default `forge test` stays green.
+/// The mainnet counterpart is test/DustMainnetFork.t.sol.
 contract DustForkTest is Test {
     // testnet addresses (discovered onchain, see M0-FINDINGS.md)
     address constant USDC = 0xbf4479C07Dc6fdc6dAa764A0ccA06969e894275F; // 18-dec testnet stable
@@ -35,10 +40,32 @@ contract DustForkTest is Test {
     address treasury = makeAddr("treasury");
 
     function setUp() public {
+        // fork live testnet; skip cleanly if the RPC is down or the state is gone
+        try vm.createSelectFork(vm.rpcUrl("robinhood_testnet")) returns (uint256) {}
+        catch {
+            vm.skip(true);
+            return;
+        }
+        if (block.chainid != 46630 || USDC.code.length == 0 || TSLA.code.length == 0 || P_TSLA.code.length == 0) {
+            vm.skip(true);
+            return;
+        }
+
         vault = new DustVault(IERC20(USDC));
         router = new DustRouter(IERC20(USDC), IDustVault(address(vault)), UNIT);
         sweeper = new DustSweeper(IERC20(USDC), IDustVault(address(vault)), treasury);
-        capture = new DustCapture(IERC20(USDC), IDustVault(address(vault)), IKeeperSource(address(sweeper)));
+        // no verified WETH/USDC pool exists on the testnet; the WETH paths are
+        // covered by the unit tests and the mainnet fork. A local WETH + pool
+        // pair satisfies the constructor's pairing check here.
+        MockWETH mweth = new MockWETH();
+        MockV3Pool mpool = new MockV3Pool(address(mweth), USDC, -198080);
+        capture = new DustCapture(
+            IERC20(USDC),
+            IDustVault(address(vault)),
+            IKeeperSource(address(sweeper)),
+            IWETH(address(mweth)),
+            IV3Pool(address(mpool))
+        );
 
         // owner curates the menu of buyable stocks
         sweeper.listStock(TSLA, P_TSLA);

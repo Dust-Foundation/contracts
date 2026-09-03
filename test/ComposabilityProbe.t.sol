@@ -4,8 +4,11 @@ pragma solidity ^0.8.24;
 import {Test, console2} from "forge-std/Test.sol";
 import {ComposabilityProbe, IERC20, IUniswapV3Pool} from "../src/ComposabilityProbe.sol";
 
-/// Fork tests against the live Robinhood Chain testnet.
-/// Run: forge test --fork-url $RPC_TESTNET -vv
+/// Fork tests against the live Robinhood Chain testnet (46630).
+/// Run: forge test --match-contract ComposabilityProbeForkTest -vv
+/// The suite forks the `robinhood_testnet` endpoint from foundry.toml itself.
+/// If the RPC is unreachable or the testnet contracts are gone, it is skipped
+/// with a reason rather than failed, so the default `forge test` stays green.
 /// These exercise the REAL deployed Stock Token + pool bytecode, so a pass here
 /// is strong evidence of composability; the same script re-runs live after funding.
 contract ComposabilityProbeForkTest is Test {
@@ -20,6 +23,16 @@ contract ComposabilityProbeForkTest is Test {
     address user = makeAddr("user");
 
     function setUp() public {
+        // fork live testnet; skip cleanly if the RPC is down or the state is gone
+        try vm.createSelectFork(vm.rpcUrl("robinhood_testnet")) returns (uint256) {}
+        catch {
+            vm.skip(true);
+            return;
+        }
+        if (block.chainid != 46630 || TSLA.code.length == 0 || POOL_TSLA_USDC_3000.code.length == 0) {
+            vm.skip(true);
+            return;
+        }
         probe = new ComposabilityProbe();
     }
 

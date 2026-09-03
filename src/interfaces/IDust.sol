@@ -9,6 +9,14 @@ interface IERC20 {
     function decimals() external view returns (uint8);
 }
 
+/// WETH9 surface: the ERC-20 plus wrap/unwrap. Robinhood Chain's WETH is an
+/// upgradeable L2 WETH behind a proxy, but it exposes the standard
+/// deposit()/withdraw(uint256) pair and pays unwrapped ETH back to msg.sender.
+interface IWETH is IERC20 {
+    function deposit() external payable;
+    function withdraw(uint256 amount) external;
+}
+
 /// Minimal Uniswap-v3-style pool surface (also matches the Synthra fork on
 /// Robinhood Chain testnet; only the callback function name differs).
 interface IV3Pool {
@@ -22,6 +30,30 @@ interface IV3Pool {
 
     function token0() external view returns (address);
     function token1() external view returns (address);
+
+    /// Oracle: cumulative tick / seconds-per-liquidity at each `secondsAgos`.
+    /// Reverts ("OLD") when the pool's observation buffer does not reach back
+    /// that far; callers that depend on it must fail closed.
+    function observe(uint32[] calldata secondsAgos)
+        external
+        view
+        returns (int56[] memory tickCumulatives, uint160[] memory secondsPerLiquidityCumulativeX128s);
+
+    function slot0()
+        external
+        view
+        returns (
+            uint160 sqrtPriceX96,
+            int24 tick,
+            uint16 observationIndex,
+            uint16 observationCardinality,
+            uint16 observationCardinalityNext,
+            uint8 feeProtocol,
+            bool unlocked
+        );
+
+    /// Permissionless: grows the oracle buffer. Anyone may pay for it.
+    function increaseObservationCardinalityNext(uint16 observationCardinalityNext) external;
 }
 
 interface IDustVault {
