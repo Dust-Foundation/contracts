@@ -85,6 +85,12 @@ two issues before mainnet: a checked-arithmetic underflow in remainingThisWeek
 when a cap was lowered below the week's usage, and an ETH-stranding path in
 withdrawEth when `to` was the WETH contract. No external audit yet.
 
+## Frozen revision
+
+The audit target is the git tag `audit-2026-09` on this repository. Test
+results at that revision: 68 unit and adversarial tests passing, 17 mainnet
+fork tests passing (1 opt-in heavy test skipped).
+
 ## Build and test
 
 Foundry, via_ir. `forge build`, then `forge test`. The mainnet fork suite
