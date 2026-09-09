@@ -171,3 +171,22 @@ Deployed from script/Deploy.s.sol (mainnet path). Live addresses for the keeper 
 - Fee: 100 bps. Menu: TSLA, NVDA, AAPL, AMZN, SPY (pools as listed above). minSweepAmount: 0 on-chain (the keeper-side DUST_MIN_SWEEP floor applies).
 - Deploy blocks 53708685 to 53708895. Tx hashes: see broadcast/Deploy.s.sol/4663/run-latest.json.
 - Blockscout verification: <verified / pending> for each of the four.
+
+## Menu expansion (2026-09-09): ten more Stock Tokens
+
+Verified 2026-09-09 against the canonical Uniswap v3 factory: each pool pairs the Stock Token with USDG, has liquidity above the keeper floor (1e16), serves a 15-minute TWAP (observation cardinality 1400 or more), and shows no measurable price impact on a $100 buy. Chosen as the deepest USDG tier per token. 204 Stock Token proxies exist on the shared beacon; COIN and QCOM have no usable v3 USDG pool and were skipped.
+
+| Ticker | Token | Pool (fee) |
+|---|---|---|
+| MSFT | 0xe93237C50D904957Cf27E7B1133b510C669c2e74 | 0xeb60bcd1d920ad6e102690ccfc6fb488899e1510 (3000) |
+| GOOGL | 0x2e0847E8910a9732eB3fb1bb4b70a580ADAD4FE3 | 0x34d0dc122cf9a8eb296fc5e0d3a233625d7d19b7 (500) |
+| META | 0xc0D6457C16Cc70d6790Dd43521C899C87ce02f35 | 0x107a7cb40d8665360ba10e59471af06150a50922 (3000) |
+| NFLX | 0xE0444EF8BF4eD74f74FD73686e2ddF4C1c5591E8 | 0x59895c0302f41aeaa129d2fa2442cec01e7ef45e (3000) |
+| AMD | 0x86923f96303D656E4aa86D9d42D1e57ad2023fdC | 0x48d284a2a4d3dc1b3da08231fe44317e7e7aa51f (3000) |
+| PLTR | 0x894E1EC2D74FFE5AEF8Dc8A9e84686acCB964F2A | 0x851680416a4f4e1c463d45171d61acddbc8554c0 (3000) |
+| QQQ | 0xD5f3879160bc7c32ebb4dC785F8a4F505888de68 | 0xd60a5d14db690b7afad71f76b108071d7175597d (500) |
+| GLD | 0xc9a981fee1f9dec688bb123ccdecc63d0debfc4e | 0x7a6a053eccf1446a2633e05aa6d40d09381997ec (3000) |
+| SPCX | 0x4a0e65a3eccec6dbe60ae065f2e7bb85fae35eea | 0xc61284332117c3fb23a2a56cceffd07f7af60029 (500) |
+| MSTR | 0xec262a75e413fAfD0dF80480274532C79D42da09 | 0x17578c0e0d15da44f31677263114f71ae76653ea (10000) |
+
+Other deep candidates for later: SGOV, AMC, HIMS, GME, DJT, RDDT, SLV, USO, RIVN, MU, RBLX, SNAP, COST, LLY.
