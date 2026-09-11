@@ -44,10 +44,10 @@ are redeployed together.
 
 | Contract | Address |
 |---|---|
-| DustVault (v2) | 0xC6d3FCA5aa8274c03d015d914ae102f3FF344137 |
-| DustRouter (v2) | 0x6A2A77F4ccb7ca9d5Af36EDb8491Af201bF209b3 |
-| DustSweeper (v2) | 0x6FE03c5aE5aACCAdCde8fe004F5c543Abeb63899 |
-| DustCapture (v2) | 0xc33e4EB6099bd96127D6016E9EdE1234d3a69406 |
+| DustVault (v2) | 0x56339d95d02f6dd2f0fa0e00ea97b7b6d0454c07 |
+| DustRouter (v2) | 0xf9509abb2dd102ab9355b80d0742e76cc034667a |
+| DustSweeper (v2) | 0xd1c68bf727468fee677ba1606ccb4d0c1cc766e5 |
+| DustCapture (v2) | 0xce125dfac93cfb344f399fbd4ccdbdd40b31351e |
 
 Dependencies: USDG 0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168 (6 decimals,
 upgradeable proxy issued by Paxos), WETH 0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73

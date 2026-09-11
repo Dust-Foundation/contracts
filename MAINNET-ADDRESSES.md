@@ -149,7 +149,7 @@ Superseded by the v2 set below (DustCapture v2 with USDG, WETH and ETH-float fun
 - Keeper: 0x2A08Fb9EFdc0cD8eC6384107F3eA0A97454abFdD
 - Fee: 100 bps. Menu: TSLA, NVDA, AAPL, AMZN, SPY (pools as listed above). Deploy block range 0x332c5a3-0x332c618. minSweepAmount 0.
 
-## Dust contracts v2 (Capture v2; deployed 2026-09-03, chain 4663)
+## Dust contracts v2 (Capture v2; deployed 2026-09-03, chain 4663) — SUPERSEDED by v3 on 2026-09-11 (sweeper to be paused; vault stays withdrawable)
 
 Deployed from script/Deploy.s.sol (mainnet path). Live addresses for the keeper (Fly secrets DUST_VAULT/DUST_ROUTER/DUST_SWEEPER/DUST_CAPTURE) and the app (Vercel NEXT_PUBLIC_DUST_VAULT/ROUTER/SWEEPER/CAPTURE).
 
@@ -191,7 +191,7 @@ Verified 2026-09-09 against the canonical Uniswap v3 factory: each pool pairs th
 
 Other deep candidates for later: SGOV, AMC, HIMS, GME, DJT, RDDT, SLV, USO, RIVN, MU, RBLX, SNAP, COST, LLY.
 
-## Dust contracts v3 (post-audit; not deployed yet, placeholders)
+## Dust contracts v3 (post-audit; deployed 2026-09-11, chain 4663) — LIVE
 
 Response to the CredShields audit of tag `audit-2026-09` (12 findings, all
 addressed; see AUDIT-SCOPE.md "Findings and responses (v3)"). All four
@@ -202,12 +202,12 @@ withdrawals from the v2 vault and v2 capture keep working forever.
 
 | Contract | Address |
 |---|---|
-| DustVault (v3; constructor (stable)) | <fill after MAINNET-V3-MIGRATION.md B4> |
-| DustRouter (v3; constructor (stable, vault, unit, factory)) | <fill after B4> |
-| DustSweeper (v3; constructor (stable, vault, treasury, factory)) | <fill after B4> |
-| DustCapture (v3; constructor (stable, vault, sweeper, weth, ethPool, factory)) | <fill after B4> |
+| DustVault (v3; constructor (stable)) | 0x56339d95d02f6dd2f0fa0e00ea97b7b6d0454c07 |
+| DustRouter (v3; constructor (stable, vault, unit, factory)) | 0xf9509abb2dd102ab9355b80d0742e76cc034667a |
+| DustSweeper (v3; constructor (stable, vault, treasury, factory)) | 0xd1c68bf727468fee677ba1606ccb4d0c1cc766e5 |
+| DustCapture (v3; constructor (stable, vault, sweeper, weth, ethPool, factory)) | 0xce125dfac93cfb344f399fbd4ccdbdd40b31351e |
 
-- Source revision: tag `audit-2026-09-v3` (commit <fill>). solc 0.8.35, via_ir, 200 runs.
+- Source revision: tag `audit-2026-09-v3` (commit 2d5c289). solc 0.8.35, via_ir, 200 runs.
 - Stable: USDG 0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168 (unit 1e6)
 - Factory (router/sweeper/capture .factory()): canonical Uniswap v3 0x1f7d7550B1b028f7571E69A784071F0205FD2EfA
 - WETH (capture.weth()): 0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73
@@ -218,7 +218,7 @@ withdrawals from the v2 vault and v2 capture keep working forever.
 - Owner: 0xc1a4b14232d1deFeAf2D0C018a504dDeb0ab5d2b (interim deployer, or the Safe once acceptOwnership has run)
 - Treasury: 0xc1a4b14232d1deFeAf2D0C018a504dDeb0ab5d2b (interim, same as deployer)
 - Keeper: 0x2A08Fb9EFdc0cD8eC6384107F3eA0A97454abFdD (unchanged)
-- Fee: 100 bps on the stable actually invested. Menu: all 15 pairs (launch five plus the 2026-09-09 expansion), listed by the deploy script. minSweepAmount: <fill; 5000000 planned>.
-- Deploy blocks <fill> to <fill>. Tx hashes: see broadcast/Deploy.s.sol/4663/run-latest.json. NEXT_PUBLIC_DUST_DEPLOY_BLOCK = <first deploy block>.
+- Fee: 100 bps on the stable actually invested. Menu: all 15 pairs (launch five plus the 2026-09-09 expansion), listed by the deploy script. minSweepAmount: 0 on-chain (keeper-side DUST_MIN_SWEEP floor applies; 5000000 planned after the smoke test).
+- Deploy blocks 60364387 to 60364502. Tx hashes: see broadcast/Deploy.s.sol/4663/run-latest.json. NEXT_PUBLIC_DUST_DEPLOY_BLOCK = 60364387.
 - Blockscout verification: <verified / pending> for each of the four.
 - Dry run 2026-09-11 (not broadcast): 21 transactions, 8,504,172 gas, about 0.0021 ETH at 0.25 gwei.
