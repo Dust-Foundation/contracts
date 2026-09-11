@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: BUSL-1.1
-pragma solidity ^0.8.24;
+pragma solidity 0.8.35;
 
 import {TickMath} from "../../src/libraries/TickMath.sol";
 import {FullMath} from "../../src/libraries/FullMath.sol";
 
-/// Test doubles for DustCapture v2. Shared by the unit tests and the testnet
+/// Test doubles for DustCapture. Shared by the unit tests and the testnet
 /// fork test (which only needs a WETH + pool pair that passes the constructor).
 
 interface IMockERC20 {
@@ -18,6 +18,30 @@ interface IUniCallback {
 
 interface ISynthraCallback {
     function synthraV3SwapCallback(int256, int256, bytes calldata) external;
+}
+
+/// Minimal Uniswap-v3-factory double: the tests register the pools they want
+/// the modules to accept; everything else resolves to address(0).
+contract MockFactory {
+    mapping(bytes32 => address) private pools;
+
+    function register(address pool) external {
+        address t0 = IMockPoolMeta(pool).token0();
+        address t1 = IMockPoolMeta(pool).token1();
+        uint24 fee = IMockPoolMeta(pool).fee();
+        pools[keccak256(abi.encode(t0, t1, fee))] = pool;
+        pools[keccak256(abi.encode(t1, t0, fee))] = pool;
+    }
+
+    function getPool(address a, address b, uint24 fee) external view returns (address) {
+        return pools[keccak256(abi.encode(a, b, fee))];
+    }
+}
+
+interface IMockPoolMeta {
+    function token0() external view returns (address);
+    function token1() external view returns (address);
+    function fee() external view returns (uint24);
 }
 
 contract MockStable {
@@ -88,21 +112,29 @@ contract MockSweeper {
 /// the TWAP, swap() fills exact-output orders at exactly that tick (plus an
 /// optional surcharge to simulate slippage/fees) and calls the configured
 /// callback name. It must be funded with the output token by the test.
+/// Adversarial knobs (audit L004): `doubleCallback` invokes the callback twice
+/// for one swap with identical deltas; `underDeliverBps` pays out less than the
+/// deltas it reports.
 contract MockV3Pool {
     address public immutable token0;
     address public immutable token1;
+    uint24 public fee = 100;
+    address public factory;
 
     int24 public meanTick;
     uint256 public extraBps;         // charge this much more input than the TWAP implies
-    bool public partialFill;         // deliver one unit less than asked
+    bool public partialFill;         // deliver one unit less than asked (and report it)
     bool public useSynthraCallback;  // call synthraV3SwapCallback instead of uniswapV3SwapCallback
     bool public observeReverts;      // simulate "OLD": no oracle history
+    bool public doubleCallback;      // invoke the callback twice within one swap
+    uint256 public underDeliverBps;  // report the full output but deliver this many bps less
     uint16 public cardinalityNext = 1;
 
     constructor(address t0, address t1, int24 tick) {
         token0 = t0;
         token1 = t1;
         meanTick = tick;
+        factory = msg.sender;
     }
 
     function setMeanTick(int24 t) external { meanTick = t; }
@@ -110,6 +142,10 @@ contract MockV3Pool {
     function setPartialFill(bool p) external { partialFill = p; }
     function setSynthraCallback(bool s) external { useSynthraCallback = s; }
     function setObserveReverts(bool r) external { observeReverts = r; }
+    function setDoubleCallback(bool d) external { doubleCallback = d; }
+    function setUnderDeliverBps(uint256 b) external { underDeliverBps = b; }
+    function setFee(uint24 f) external { fee = f; }
+    function setFactory(address f) external { factory = f; }
 
     function observe(uint32[] calldata secondsAgos)
         external
@@ -157,22 +193,28 @@ contract MockV3Pool {
         address tokenIn = zeroForOne ? token0 : token1;
 
         uint256 amountIn = quoteExactOutput(zeroForOne, amountOut);
-        uint256 delivered = partialFill ? amountOut - 1 : amountOut;
+        uint256 reported = partialFill ? amountOut - 1 : amountOut;
+        uint256 delivered = reported - (reported * underDeliverBps) / 10_000;
 
         require(IMockERC20(tokenOut).transfer(recipient, delivered), "mock: pay out");
         uint256 before = IMockERC20(tokenIn).balanceOf(address(this));
 
         if (zeroForOne) {
             amount0 = int256(amountIn);
-            amount1 = -int256(delivered);
+            amount1 = -int256(reported);
         } else {
             amount1 = int256(amountIn);
-            amount0 = -int256(delivered);
+            amount0 = -int256(reported);
         }
 
-        if (useSynthraCallback) ISynthraCallback(msg.sender).synthraV3SwapCallback(amount0, amount1, data);
-        else IUniCallback(msg.sender).uniswapV3SwapCallback(amount0, amount1, data);
+        _callback(amount0, amount1, data);
+        if (doubleCallback) _callback(amount0, amount1, data);
 
         require(IMockERC20(tokenIn).balanceOf(address(this)) >= before + amountIn, "IIA");
+    }
+
+    function _callback(int256 a0, int256 a1, bytes calldata data) internal {
+        if (useSynthraCallback) ISynthraCallback(msg.sender).synthraV3SwapCallback(a0, a1, data);
+        else IUniCallback(msg.sender).uniswapV3SwapCallback(a0, a1, data);
     }
 }

@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: BUSL-1.1
-pragma solidity ^0.8.24;
+pragma solidity 0.8.35;
 
 import {Test} from "forge-std/Test.sol";
 import {DustVault} from "../src/DustVault.sol";
 import {DustCapture, IKeeperSource} from "../src/DustCapture.sol";
-import {IERC20, IWETH, IV3Pool, IDustVault} from "../src/interfaces/IDust.sol";
+import {IERC20, IWETH, IV3Pool, IV3Factory, IDustVault} from "../src/interfaces/IDust.sol";
 import {TickMath} from "../src/libraries/TickMath.sol";
 import {FullMath} from "../src/libraries/FullMath.sol";
-import {MockStable, MockWETH, MockSweeper, MockV3Pool} from "./mocks/CaptureMocks.sol";
+import {MockStable, MockWETH, MockSweeper, MockV3Pool, MockFactory} from "./mocks/CaptureMocks.sol";
 
 /// A float owner that re-enters the capture module from its receive() hook
 /// while its own withdrawal is mid-flight.
@@ -72,6 +72,10 @@ contract ObservePool {
         c1 = b;
     }
 
+    function fee() external pure returns (uint24) {
+        return 100;
+    }
+
     function observe(uint32[] calldata) external view returns (int56[] memory t, uint160[] memory l) {
         t = new int56[](2);
         l = new uint160[](2);
@@ -84,6 +88,7 @@ contract DustCaptureAdversarialTest is Test {
     MockStable stable;
     MockWETH weth;
     MockV3Pool pool;
+    MockFactory factory;
     DustVault vault;
     MockSweeper sweeper;
     DustCapture capture;
@@ -102,12 +107,15 @@ contract DustCaptureAdversarialTest is Test {
         pool = new MockV3Pool(address(weth), address(stable), TICK);
         vault = new DustVault(IERC20(address(stable)));
         sweeper = new MockSweeper(keeper);
+        factory = new MockFactory();
+        factory.register(address(pool));
         capture = new DustCapture(
             IERC20(address(stable)),
             IDustVault(address(vault)),
             IKeeperSource(address(sweeper)),
             IWETH(address(weth)),
-            IV3Pool(address(pool))
+            IV3Pool(address(pool)),
+            IV3Factory(address(factory))
         );
         vault.setModules(makeAddr("router"), address(sweeper), address(capture));
         stable.mint(address(pool), 1_000_000 * UNIT);
@@ -372,12 +380,16 @@ contract DustCaptureAdversarialTest is Test {
 
     function _oracleCapture(bool wethFirst) internal returns (DustCapture c, ObservePool op) {
         op = wethFirst ? new ObservePool(address(weth), address(stable)) : new ObservePool(address(stable), address(weth));
+        // a fresh factory per oracle pool: each is "the" WETH/stable 0.01% pool of its own factory
+        MockFactory f = new MockFactory();
+        f.register(address(op));
         c = new DustCapture(
             IERC20(address(stable)),
             IDustVault(address(vault)),
             IKeeperSource(address(sweeper)),
             IWETH(address(weth)),
-            IV3Pool(address(op))
+            IV3Pool(address(op)),
+            IV3Factory(address(f))
         );
     }
 
@@ -479,5 +491,80 @@ contract DustCaptureAdversarialTest is Test {
         assertEq(stable.balanceOf(address(vault)), 1 * UNIT);
         assertEq(stable.balanceOf(keeper), 0);
         assertEq(weth.balanceOf(keeper), 0);
+    }
+
+    // ------------------------------------------------------------------
+    // audit L004: the WETH bound is consumed per callback, so a pool calling
+    // back N times within one swap cannot be paid N times; the vault credit is
+    // measured, not read from the pool's report
+    // ------------------------------------------------------------------
+
+    function _fundAliceBothSources() internal {
+        vm.startPrank(alice);
+        capture.setWeeklyCap(uint96(10 * UNIT));
+        capture.depositEth{value: 1 ether}();
+        weth.deposit{value: 1 ether}();
+        weth.approve(address(capture), type(uint256).max);
+        vm.stopPrank();
+    }
+
+    function test_L004_repeatedCallbackCannotExceedTheLimit() public {
+        _fundAliceBothSources();
+        pool.setDoubleCallback(true); // identical deltas, twice, inside one swap
+        uint256 floatBefore = capture.ethBalance(alice);
+        uint256 walletBefore = weth.balanceOf(alice);
+        uint256 poolBefore = weth.balanceOf(address(pool));
+
+        vm.startPrank(keeper);
+        vm.expectRevert(DustCapture.OverMaxWethIn.selector);
+        capture.captureFromEth(alice, 530_000, type(uint256).max);
+        vm.expectRevert(DustCapture.OverMaxWethIn.selector);
+        capture.captureFromWeth(alice, 530_000, type(uint256).max);
+        vm.stopPrank();
+
+        assertEq(capture.ethBalance(alice), floatBefore, "float untouched");
+        assertEq(weth.balanceOf(alice), walletBefore, "wallet untouched");
+        assertEq(weth.balanceOf(address(pool)), poolBefore, "pool was paid nothing");
+        assertEq(vault.accruedStable(alice), 0);
+        (, uint96 used,) = capture.configOf(alice);
+        assertEq(used, 0, "a reverted capture consumes no cap");
+
+        // the same pool behaving (one callback) fills, and pays exactly once
+        pool.setDoubleCallback(false);
+        uint256 owed = pool.quoteExactOutput(true, 530_000);
+        vm.prank(keeper);
+        capture.captureFromEth(alice, 530_000, type(uint256).max);
+        assertEq(floatBefore - capture.ethBalance(alice), owed, "paid exactly the single quote");
+        assertEq(weth.balanceOf(address(pool)) - poolBefore, owed);
+    }
+
+    /// Two callbacks that each fit under the limit in isolation are still
+    /// rejected in aggregate: with the surcharge at 1%, one payment is inside
+    /// the 2% bound but two are not.
+    function test_L004_aggregateBoundEvenWhenEachCallbackFits() public {
+        _fundAliceBothSources();
+        pool.setExtraBps(100);
+        pool.setDoubleCallback(true);
+        uint256 single = pool.quoteExactOutput(true, 530_000);
+        assertLe(single, capture.maxWethInFor(530_000), "one payment alone is inside the bound");
+        vm.prank(keeper);
+        vm.expectRevert(DustCapture.OverMaxWethIn.selector);
+        capture.captureFromEth(alice, 530_000, type(uint256).max);
+        assertEq(capture.ethBalance(alice), 1 ether);
+    }
+
+    function test_L004_vaultCreditedOnlyForStableThatArrived() public {
+        _fundAliceBothSources();
+        pool.setUnderDeliverBps(100); // reports 0.53 delivered, actually pays 1% less
+        uint256 vaultBefore = stable.balanceOf(address(vault));
+        vm.startPrank(keeper);
+        vm.expectRevert(DustCapture.PartialFill.selector);
+        capture.captureFromEth(alice, 530_000, type(uint256).max);
+        vm.expectRevert(DustCapture.PartialFill.selector);
+        capture.captureFromWeth(alice, 530_000, type(uint256).max);
+        vm.stopPrank();
+        assertEq(vault.accruedStable(alice), 0, "no credit for stable that never arrived");
+        assertEq(stable.balanceOf(address(vault)), vaultBefore);
+        assertEq(capture.ethBalance(alice), 1 ether, "reverted swap took nothing from the float");
     }
 }

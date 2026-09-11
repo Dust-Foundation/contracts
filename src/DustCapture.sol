@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: BUSL-1.1
-pragma solidity ^0.8.24;
+pragma solidity 0.8.35;
 
-import {IERC20, IWETH, IV3Pool, IDustVault} from "./interfaces/IDust.sol";
+import {IERC20, IWETH, IV3Pool, IV3PoolMeta, IV3Factory, IDustVault} from "./interfaces/IDust.sol";
+import {SafeTransfer} from "./libraries/SafeTransfer.sol";
 import {TickMath} from "./libraries/TickMath.sol";
 import {FullMath} from "./libraries/FullMath.sol";
 
@@ -26,14 +27,20 @@ interface IKeeperSource {
 ///    cap counts every funding source together.
 ///  - The user's ERC-20 allowance (stable or WETH) or their ETH float is a
 ///    second, independent cap they control from any wallet UI.
-///  - WETH/ETH captures are exact-output swaps on one immutable pool. The WETH
-///    the keeper may spend per stable unit is bounded on-chain by the pool's
-///    own 10-minute TWAP plus MAX_SLIPPAGE_BPS, so a compromised keeper cannot
-///    overpay, and by a per-call maxWethIn the keeper supplies.
+///  - WETH/ETH captures are exact-output swaps on one immutable pool that the
+///    canonical Uniswap v3 factory acknowledges for (WETH, stable, fee). The
+///    WETH paid for one capture is bounded on-chain, IN AGGREGATE across every
+///    callback the pool makes during that swap, by min(the pool's own
+///    10-minute TWAP cost plus MAX_SLIPPAGE_BPS, the keeper's maxWethIn). The
+///    bound is decremented in storage as it is consumed, so a pool cannot be
+///    paid twice against it. The stable credited to the user is the vault's
+///    measured balance delta and must equal amountOut exactly.
 ///  - No owner, no admin, no pause: nobody can change these rules after
 ///    deploy. The keeper address is read from the sweeper so key rotation
 ///    stays in one place. withdrawEth works in every state, cap or no cap.
 contract DustCapture {
+    using SafeTransfer for IERC20;
+
     uint64 public constant WEEK = 7 days;
     /// Hard bound on every WETH pull: at most 2% worse than the pool TWAP.
     uint16 public constant MAX_SLIPPAGE_BPS = 200;
@@ -45,6 +52,7 @@ contract DustCapture {
     IKeeperSource public immutable sweeper;
     IWETH public immutable weth;
     IV3Pool public immutable ethPool;
+    IV3Factory public immutable factory;
     bool public immutable wethIsToken0;
 
     struct Config {
@@ -66,7 +74,7 @@ contract DustCapture {
         address user;      // who is funding and being credited
         uint8 source;      // 1 = WETH wallet, 2 = ETH float
         uint256 amountOut; // stable the pool must deliver, exactly
-        uint256 wethLimit; // min(keeper maxWethIn, maxWethInFor(amountOut))
+        uint256 wethLimit; // min(keeper maxWethIn, maxWethInFor(amountOut)), less what was already paid
     }
 
     Pending private pending;
@@ -93,10 +101,17 @@ contract DustCapture {
     error NotWeth();
     error BadRecipient();
 
-    constructor(IERC20 _stable, IDustVault _vault, IKeeperSource _sweeper, IWETH _weth, IV3Pool _ethPool) {
+    constructor(
+        IERC20 _stable,
+        IDustVault _vault,
+        IKeeperSource _sweeper,
+        IWETH _weth,
+        IV3Pool _ethPool,
+        IV3Factory _factory
+    ) {
         if (
             address(_stable) == address(0) || address(_vault) == address(0) || address(_sweeper) == address(0)
-                || address(_weth) == address(0) || address(_ethPool) == address(0)
+                || address(_weth) == address(0) || address(_ethPool) == address(0) || address(_factory) == address(0)
         ) revert ZeroAddress();
         if (address(_weth) == address(_stable)) revert BadPool();
         address t0 = _ethPool.token0();
@@ -104,12 +119,17 @@ contract DustCapture {
         bool wethFirst = t0 == address(_weth) && t1 == address(_stable);
         bool stableFirst = t0 == address(_stable) && t1 == address(_weth);
         if (!wethFirst && !stableFirst) revert BadPool();
+        // provenance travels with the contract, not with one deploy script (audit L004)
+        if (_factory.getPool(address(_weth), address(_stable), IV3PoolMeta(address(_ethPool)).fee()) != address(_ethPool)) {
+            revert BadPool();
+        }
 
         stable = _stable;
         vault = _vault;
         sweeper = _sweeper;
         weth = _weth;
         ethPool = _ethPool;
+        factory = _factory;
         wethIsToken0 = wethFirst;
     }
 
@@ -166,7 +186,7 @@ contract DustCapture {
         // pull straight into the vault, credit the same user. Reverts if the
         // user's wallet allowance or balance is insufficient; the keeper is
         // expected to check first.
-        if (!stable.transferFrom(user, address(vault), amount)) revert TransferFailed();
+        stable.safeTransferFrom(user, address(vault), amount);
         vault.accrue(user, amount);
         emit Captured(user, amount, newUsed);
         emit CapturedFrom(user, 0, amount, amount);
@@ -262,6 +282,7 @@ contract DustCapture {
         uint256 limit = maxWethInFor(amountOut);
         if (maxWethIn < limit) limit = maxWethIn;
 
+        uint256 vaultBefore = stable.balanceOf(address(vault));
         pending = Pending({pool: address(ethPool), user: user, source: source, amountOut: amountOut, wethLimit: limit});
         (int256 a0, int256 a1) = ethPool.swap(
             address(vault), // stable lands in the vault directly
@@ -276,6 +297,8 @@ contract DustCapture {
         int256 wethDelta = wethIsToken0 ? a0 : a1;
         if (stableDelta != -int256(amountOut)) revert PartialFill();
         if (wethDelta <= 0 || uint256(wethDelta) > limit) revert OverMaxWethIn();
+        // credit what measurably arrived in the vault, never the pool's report
+        if (stable.balanceOf(address(vault)) - vaultBefore != amountOut) revert PartialFill();
 
         vault.accrue(user, amountOut);
         emit Captured(user, amountOut, newUsed);
@@ -283,26 +306,33 @@ contract DustCapture {
     }
 
     /// Pays the pool the WETH it is owed for the pending swap, after checking
-    /// the fill and the bound. Runs inside ethPool.swap only.
+    /// the fill and the bound. The bound is consumed in storage, so however
+    /// many times the pool calls back within one swap, the payments add up to
+    /// at most the limit set before the swap. Runs inside ethPool.swap only.
     function _paySwap(int256 a0, int256 a1) internal {
-        Pending memory p = pending;
-        if (p.pool == address(0) || msg.sender != p.pool || msg.sender != address(ethPool)) revert BadCallback();
+        Pending storage p = pending;
+        address pool = p.pool;
+        if (pool == address(0) || msg.sender != pool || msg.sender != address(ethPool)) revert BadCallback();
 
         int256 stableDelta = wethIsToken0 ? a1 : a0;
         int256 wethDelta = wethIsToken0 ? a0 : a1;
         if (stableDelta != -int256(p.amountOut)) revert PartialFill();
         if (wethDelta <= 0) revert BadCallback();
         uint256 owed = uint256(wethDelta);
-        if (owed > p.wethLimit) revert OverMaxWethIn();
+        uint256 limit = p.wethLimit;
+        if (owed > limit) revert OverMaxWethIn();
+        p.wethLimit = limit - owed; // aggregate bound per swap (audit L004)
 
-        if (p.source == 1) {
+        uint8 source = p.source;
+        address user = p.user;
+        if (source == 1) {
             // wallet WETH goes straight to the pool; this contract never holds it
-            if (!weth.transferFrom(p.user, msg.sender, owed)) revert TransferFailed();
-        } else if (p.source == 2) {
-            uint256 bal = ethBalance[p.user];
+            IERC20(address(weth)).safeTransferFrom(user, msg.sender, owed);
+        } else if (source == 2) {
+            uint256 bal = ethBalance[user];
             if (owed > bal) revert InsufficientEthBalance();
-            ethBalance[p.user] = bal - owed;
-            if (!weth.transfer(msg.sender, owed)) revert TransferFailed();
+            ethBalance[user] = bal - owed;
+            IERC20(address(weth)).safeTransfer(msg.sender, owed);
         } else {
             revert BadCallback();
         }

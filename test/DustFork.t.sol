@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: BUSL-1.1
-pragma solidity ^0.8.24;
+pragma solidity 0.8.35;
 
 import {Test, console2} from "forge-std/Test.sol";
 import {DustVault} from "../src/DustVault.sol";
 import {DustRouter} from "../src/DustRouter.sol";
 import {DustSweeper} from "../src/DustSweeper.sol";
 import {DustCapture, IKeeperSource} from "../src/DustCapture.sol";
-import {IERC20, IWETH, IV3Pool, IDustVault} from "../src/interfaces/IDust.sol";
-import {MockWETH, MockV3Pool} from "./mocks/CaptureMocks.sol";
+import {IERC20, IWETH, IV3Pool, IV3Factory, IV3PoolMeta, IDustVault} from "../src/interfaces/IDust.sol";
+import {MockWETH, MockV3Pool, MockFactory} from "./mocks/CaptureMocks.sol";
 
 /// End-to-end against live Robinhood Chain testnet state (46630).
 /// Run: forge test --match-contract DustForkTest -vv
@@ -51,21 +51,34 @@ contract DustForkTest is Test {
             return;
         }
 
+        // the testnet pools are a Synthra v3 fork; their factory is the provenance source here
+        address factory = IV3PoolMeta(P_TSLA).factory();
         vault = new DustVault(IERC20(USDC));
-        router = new DustRouter(IERC20(USDC), IDustVault(address(vault)), UNIT);
-        sweeper = new DustSweeper(IERC20(USDC), IDustVault(address(vault)), treasury);
+        router = new DustRouter(IERC20(USDC), IDustVault(address(vault)), UNIT, IV3Factory(factory));
+        sweeper = new DustSweeper(IERC20(USDC), IDustVault(address(vault)), treasury, IV3Factory(factory));
         // no verified WETH/USDC pool exists on the testnet; the WETH paths are
         // covered by the unit tests and the mainnet fork. A local WETH + pool
-        // pair satisfies the constructor's pairing check here.
+        // pair, vouched for by a local factory double, satisfies the constructor.
         MockWETH mweth = new MockWETH();
         MockV3Pool mpool = new MockV3Pool(address(mweth), USDC, -198080);
+        MockFactory mfactory = new MockFactory();
+        mfactory.register(address(mpool));
         capture = new DustCapture(
             IERC20(USDC),
             IDustVault(address(vault)),
             IKeeperSource(address(sweeper)),
             IWETH(address(mweth)),
-            IV3Pool(address(mpool))
+            IV3Pool(address(mpool)),
+            IV3Factory(address(mfactory))
         );
+
+        // v3 sweeps need a 10-minute TWAP from every pool. Some testnet pools
+        // run with observation cardinality 1 and a recent swap, so grow the
+        // buffers (permissionless) and step forward past the window so the
+        // existing observation is old enough to serve it.
+        address[5] memory ps = [P_TSLA, P_AMZN, P_PLTR, P_NFLX, P_AMD];
+        for (uint256 i; i < 5; i++) IV3Pool(ps[i]).increaseObservationCardinalityNext(16);
+        vm.warp(block.timestamp + 601);
 
         // owner curates the menu of buyable stocks
         sweeper.listStock(TSLA, P_TSLA);
@@ -77,6 +90,24 @@ contract DustForkTest is Test {
         vault.setModules(address(router), address(sweeper), address(capture));
         sweeper.setFeeBps(0); // most tests exercise mechanics fee-free; fee has its own test
         deal(USDC, alice, 1_000e18);
+    }
+
+    /// v3 slicing: fee reserve on the investable amount.
+    function _investable(uint256 amount) internal view returns (uint256) {
+        uint16 fb = sweeper.feeBps(); // slicing depends on feeBps alone, never on the treasury
+        return fb == 0 ? amount : (amount * 10_000) / (10_000 + fb);
+    }
+
+    /// Sweep `user` as `caller` with the pinned v3 inputs read live.
+    function _sweepAs(address caller, address user, uint256[] memory minOuts) internal {
+        DustSweeper.Leg[] memory legs = sweeper.basketOf(user);
+        address[] memory pools = new address[](legs.length);
+        for (uint256 i; i < legs.length; i++) pools[i] = sweeper.poolFor(legs[i].token);
+        uint256 amount = vault.accruedStable(user);
+        uint256 nonce = sweeper.basketNonce(user);
+        uint16 fb = sweeper.feeBps();
+        vm.prank(caller);
+        sweeper.sweep(user, amount, pools, minOuts, nonce, fb);
     }
 
     /// Give alice an equal-weight 5-stock basket (the old default), returns minOuts.
@@ -109,8 +140,8 @@ contract DustForkTest is Test {
         assertEq(IERC20(USDC).balanceOf(address(vault)), 2.58e18, "round-up not in vault");
         assertEq(IERC20(USDC).balanceOf(address(router)), 0, "router must hold nothing");
 
-        vm.prank(alice);
-        sweeper.sweep(alice, minOuts, 1); // basketNonce is 1 after setBasket
+        assertEq(sweeper.basketNonce(alice), 1, "basketNonce is 1 after setBasket");
+        _sweepAs(alice, alice, minOuts);
 
         assertEq(vault.accruedStable(alice), 0, "full fill should leave nothing accrued");
         assertEq(vault.costBasis(alice), 2.58e18);
@@ -146,8 +177,7 @@ contract DustForkTest is Test {
 
         uint256[] memory minOuts = new uint256[](2);
         minOuts[0] = 1; minOuts[1] = 1;
-        vm.prank(alice);
-        sweeper.sweep(alice, minOuts, 1);
+        _sweepAs(alice, alice, minOuts);
 
         // only TSLA and AMD bought; the other three menu stocks untouched
         assertGt(vault.tokenBalanceOf(alice, TSLA), 0);
@@ -178,7 +208,7 @@ contract DustForkTest is Test {
         assertEq(capture.remainingThisWeek(alice), 4.4e18);
 
         // and it sweeps into her basket exactly like an in-app round-up
-        sweeper.sweep(alice, minOuts, 1); // test contract is keeper
+        _sweepAs(address(this), alice, minOuts); // test contract is keeper
         assertEq(vault.accruedStable(alice), 0);
         assertEq(vault.costBasis(alice), 0.6e18);
         assertGt(vault.tokenBalanceOf(alice, AMZN), 0);
@@ -195,13 +225,14 @@ contract DustForkTest is Test {
         vm.stopPrank();
         assertEq(vault.accruedStable(alice), 3e18);
 
-        vm.prank(alice);
-        sweeper.sweep(alice, minOuts, 1);
+        _sweepAs(alice, alice, minOuts);
 
-        // 1% of 3.00 = 0.03 to treasury; 2.97 invested (cost basis)
-        assertEq(IERC20(USDC).balanceOf(treasury), 0.03e18, "treasury fee");
-        assertEq(vault.costBasis(alice), 2.97e18, "99% invested");
-        assertEq(vault.accruedStable(alice), 0);
+        // v3: 3.00 -> investable 3.00 * 10000/10100 = 2.9702..., fee 1% of that, residue <= 2 wei
+        uint256 investable = _investable(3e18);
+        assertEq(IERC20(USDC).balanceOf(treasury), (investable * 100) / 10_000, "treasury fee = 1% of invested");
+        assertEq(vault.costBasis(alice), investable, "invested = the fee-reserved slice");
+        assertLe(vault.accruedStable(alice), 2);
+        assertEq(IERC20(USDC).balanceOf(treasury) + vault.costBasis(alice) + vault.accruedStable(alice), 3e18);
         assertEq(IERC20(USDC).balanceOf(address(sweeper)), 0, "sweeper holds nothing");
     }
 
@@ -229,8 +260,7 @@ contract DustForkTest is Test {
         uint256[] memory minOuts = new uint256[](1);
         minOuts[0] = type(uint256).max; // impossible -> leg skipped -> nothing invested
 
-        vm.prank(alice);
-        sweeper.sweep(alice, minOuts, 1);
+        _sweepAs(alice, alice, minOuts);
 
         assertEq(IERC20(USDC).balanceOf(treasury), 0, "no fee when nothing invested");
         assertEq(vault.accruedStable(alice), 0.5e18, "full amount returned");
@@ -262,13 +292,13 @@ contract DustForkTest is Test {
         vm.startPrank(alice);
         IERC20(USDC).approve(address(router), type(uint256).max);
         router.swapWithRoundUp(P_TSLA, TSLA, 9.5e18, 1, 1, 1);
-        sweeper.sweep(alice, one, 1);
         vm.stopPrank();
+        _sweepAs(alice, alice, one);
         vm.startPrank(bob2);
         IERC20(USDC).approve(address(router), type(uint256).max);
         router.swapWithRoundUp(P_NFLX, NFLX, 9.5e18, 1, 1, 1);
-        sweeper.sweep(bob2, one, 1);
         vm.stopPrank();
+        _sweepAs(bob2, bob2, one);
 
         assertGt(vault.tokenBalanceOf(alice, TSLA), 0);
         assertEq(vault.tokenBalanceOf(alice, NFLX), 0);
@@ -287,7 +317,7 @@ contract DustForkTest is Test {
 
         vm.prank(alice);
         vm.expectRevert(DustSweeper.Paused.selector);
-        sweeper.sweep(alice, minOuts, 1);
+        sweeper.sweep(alice, 1e18, new address[](5), minOuts, 1, 0);
 
         // withdrawal of accrued stable still works while paused
         vm.prank(alice);
@@ -305,7 +335,7 @@ contract DustForkTest is Test {
         address mallory = makeAddr("mallory");
         vm.prank(mallory);
         vm.expectRevert(DustSweeper.NotAuthorized.selector);
-        sweeper.sweep(alice, minOuts, 1);
+        sweeper.sweep(alice, 1e18, new address[](5), minOuts, 1, 0);
     }
 
     /// A leg whose slippage bound can't be met is SKIPPED (isolated), not fatal:
@@ -319,8 +349,7 @@ contract DustForkTest is Test {
 
         minOuts[0] = type(uint256).max; // TSLA leg impossible to fill
 
-        vm.prank(alice);
-        sweeper.sweep(alice, minOuts, 1);
+        _sweepAs(alice, alice, minOuts);
 
         // TSLA leg skipped -> no TSLA credited, its 20% slice re-accrued
         assertEq(vault.tokenBalanceOf(alice, TSLA), 0, "skipped leg must not credit");
@@ -336,10 +365,14 @@ contract DustForkTest is Test {
         vm.startPrank(alice);
         IERC20(USDC).approve(address(router), type(uint256).max);
         router.swapWithRoundUp(P_TSLA, TSLA, 99.5e18, 1, 1, 1);
-        minOuts[2] = 0; // one zero floor on a funded leg
-        vm.expectRevert(DustSweeper.ZeroMinOut.selector);
-        sweeper.sweep(alice, minOuts, 1);
         vm.stopPrank();
+        minOuts[2] = 0; // one zero floor on a funded, listed leg
+        DustSweeper.Leg[] memory legs = sweeper.basketOf(alice);
+        address[] memory pools = new address[](legs.length);
+        for (uint256 i; i < legs.length; i++) pools[i] = sweeper.poolFor(legs[i].token);
+        vm.prank(alice);
+        vm.expectRevert(DustSweeper.ZeroMinOut.selector);
+        sweeper.sweep(alice, 0.5e18, pools, minOuts, 1, 0);
     }
 
     function test_staleBasketRejected() public {
@@ -348,7 +381,7 @@ contract DustForkTest is Test {
         IERC20(USDC).approve(address(router), type(uint256).max);
         router.swapWithRoundUp(P_TSLA, TSLA, 99.5e18, 1, 1, 1);
         vm.expectRevert(DustSweeper.StaleBasket.selector);
-        sweeper.sweep(alice, minOuts, 99); // wrong nonce
+        sweeper.sweep(alice, 0.5e18, new address[](5), minOuts, 99, 0); // wrong nonce
         vm.stopPrank();
     }
 

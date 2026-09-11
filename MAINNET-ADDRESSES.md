@@ -190,3 +190,35 @@ Verified 2026-09-09 against the canonical Uniswap v3 factory: each pool pairs th
 | MSTR | 0xec262a75e413fAfD0dF80480274532C79D42da09 | 0x17578c0e0d15da44f31677263114f71ae76653ea (10000) |
 
 Other deep candidates for later: SGOV, AMC, HIMS, GME, DJT, RDDT, SLV, USO, RIVN, MU, RBLX, SNAP, COST, LLY.
+
+## Dust contracts v3 (post-audit; not deployed yet, placeholders)
+
+Response to the CredShields audit of tag `audit-2026-09` (12 findings, all
+addressed; see AUDIT-SCOPE.md "Findings and responses (v3)"). All four
+contracts are redeployed because DustVault.setModules is one-shot. Deploy path:
+MAINNET-V3-MIGRATION.md. Once these are filled, the v2 set above is superseded:
+its sweeper is paused (setPaused(true)), the keeper and the app point here, and
+withdrawals from the v2 vault and v2 capture keep working forever.
+
+| Contract | Address |
+|---|---|
+| DustVault (v3; constructor (stable)) | <fill after MAINNET-V3-MIGRATION.md B4> |
+| DustRouter (v3; constructor (stable, vault, unit, factory)) | <fill after B4> |
+| DustSweeper (v3; constructor (stable, vault, treasury, factory)) | <fill after B4> |
+| DustCapture (v3; constructor (stable, vault, sweeper, weth, ethPool, factory)) | <fill after B4> |
+
+- Source revision: tag `audit-2026-09-v3` (commit <fill>). solc 0.8.35, via_ir, 200 runs.
+- Stable: USDG 0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168 (unit 1e6)
+- Factory (router/sweeper/capture .factory()): canonical Uniswap v3 0x1f7d7550B1b028f7571E69A784071F0205FD2EfA
+- WETH (capture.weth()): 0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73
+- ETH pool (capture.ethPool()): WETH/USDG 0.01% 0x52e65B17fB6E5BA00Ed806f37Afcd2DaA50271Ca, token0 = WETH
+- Sweeper bounds (constants): MAX_FEE_BPS 500, MAX_SWEEP_SLIPPAGE_BPS 300 (10-minute TWAP minus 3% per leg), TWAP_WINDOW 600 s, MIN_SWEEP_INTERVAL 300 s
+- Capture bounds (constants): MAX_SLIPPAGE_BPS 200 (TWAP + 2%, aggregate per swap), TWAP_WINDOW 600 s, WEEK 604800 s
+- Deployer: 0xc1a4b14232d1deFeAf2D0C018a504dDeb0ab5d2b
+- Owner: 0xc1a4b14232d1deFeAf2D0C018a504dDeb0ab5d2b (interim deployer, or the Safe once acceptOwnership has run)
+- Treasury: 0xc1a4b14232d1deFeAf2D0C018a504dDeb0ab5d2b (interim, same as deployer)
+- Keeper: 0x2A08Fb9EFdc0cD8eC6384107F3eA0A97454abFdD (unchanged)
+- Fee: 100 bps on the stable actually invested. Menu: all 15 pairs (launch five plus the 2026-09-09 expansion), listed by the deploy script. minSweepAmount: <fill; 5000000 planned>.
+- Deploy blocks <fill> to <fill>. Tx hashes: see broadcast/Deploy.s.sol/4663/run-latest.json. NEXT_PUBLIC_DUST_DEPLOY_BLOCK = <first deploy block>.
+- Blockscout verification: <verified / pending> for each of the four.
+- Dry run 2026-09-11 (not broadcast): 21 transactions, 8,504,172 gas, about 0.0021 ETH at 0.25 gwei.

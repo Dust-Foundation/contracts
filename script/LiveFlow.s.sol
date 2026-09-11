@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: BUSL-1.1
-pragma solidity ^0.8.24;
+pragma solidity 0.8.35;
 
 import {Script, console2} from "forge-std/Script.sol";
 import {DustSweeper} from "../src/DustSweeper.sol";
@@ -56,7 +56,9 @@ contract LiveFlow is Script {
         // 3. sweep into the 60/40 basket (fee 1% applies)
         uint256[] memory minOuts = new uint256[](2);
         minOuts[0] = 1; minOuts[1] = 1;
-        sweeper.sweep(me, minOuts, sweeper.basketNonce(me));
+        address[] memory legPools = new address[](2);
+        legPools[0] = sweeper.poolFor(TSLA); legPools[1] = sweeper.poolFor(AMD);
+        sweeper.sweep(me, vault.accruedStable(me), legPools, minOuts, sweeper.basketNonce(me), sweeper.feeBps());
 
         console2.log("--- after sweep ---");
         console2.log("TSLA in vault:", vault.tokenBalanceOf(me, TSLA));

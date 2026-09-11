@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-pragma solidity ^0.8.0;
+pragma solidity 0.8.35;
 
 /// @title Math library for computing sqrt prices from ticks and vice versa
 /// @notice Computes sqrt price for ticks of size 1.0001, i.e. sqrt(1.0001^tick) as fixed point Q64.96 numbers. Supports
 /// prices between 2**-128 and 2**128
-/// @dev Vendored from Uniswap v3-core (Solidity 0.8 branch). Unmodified apart from this note.
+/// @dev Vendored from Uniswap v3-core (Solidity 0.8 branch). Deviation from upstream: the
+/// floating `^0.8.0` pragma is pinned to 0.8.35 (audit L005) so the bytecode is reproducible
+/// from source. Otherwise unmodified apart from this note.
 library TickMath {
     /// @dev The minimum tick that may be passed to #getSqrtRatioAtTick computed from log base 1.0001 of 2**-128
     int24 internal constant MIN_TICK = -887272;

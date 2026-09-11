@@ -1,21 +1,12 @@
 // SPDX-License-Identifier: BUSL-1.1
-pragma solidity ^0.8.24;
+pragma solidity 0.8.35;
 
 import {Script, console2} from "forge-std/Script.sol";
 import {DustVault} from "../src/DustVault.sol";
 import {DustRouter} from "../src/DustRouter.sol";
 import {DustSweeper} from "../src/DustSweeper.sol";
 import {DustCapture, IKeeperSource} from "../src/DustCapture.sol";
-import {IERC20, IWETH, IV3Pool, IDustVault} from "../src/interfaces/IDust.sol";
-
-interface IV3PoolMeta {
-    function factory() external view returns (address);
-    function fee() external view returns (uint24);
-}
-
-interface IV3Factory {
-    function getPool(address tokenA, address tokenB, uint24 fee) external view returns (address);
-}
+import {IERC20, IWETH, IV3Pool, IV3PoolMeta, IV3Factory, IDustVault} from "../src/interfaces/IDust.sol";
 
 /// Deploy-only: the hardened trio + capture module + wiring. Prints addresses
 /// for the keeper and the web app to consume.
@@ -46,6 +37,12 @@ interface IV3Factory {
 ///   ETH_POOL     Uniswap v3 WETH/STABLE pool the capture module swaps on and
 ///                reads its TWAP from (default WETH/USDG 0.01% 0x52e6...71ca
 ///                on 4663; REQUIRED on any other chain)
+///   FACTORY      canonical Uniswap v3 factory the three swap modules accept
+///                pools from (default 0x1f7d...2efa on 4663; REQUIRED on any
+///                other chain, e.g. the Synthra factory on the testnet)
+///
+/// v3 menu: the mainnet default lists all fifteen verified (token, pool) pairs
+/// from MAINNET-ADDRESSES.md (the launch five plus the 2026-09-09 expansion).
 ///
 /// After deploying, the script makes sure ETH_POOL's oracle buffer can serve
 /// the capture module's 10-minute TWAP: if slot0().observationCardinalityNext
@@ -80,6 +77,27 @@ contract Deploy is Script {
     address constant MP_AAPL = 0xAae0d815EE56e4092a5E5C2911E676Fea50B2d6D; // AAPL/USDG 0.05%
     address constant MP_AMZN = 0x8AC92DA74AB5F3b1d024Dc1943Ad7e15Dc4179Ef; // AMZN/USDG 0.3%
     address constant MP_SPY = 0xa7Bb1AC63BBaB0C44316E6c8C455213441689167; // SPY/USDG 0.05%
+    // ---- menu expansion (2026-09-09), verified against the canonical factory ----
+    address constant M_MSFT = 0xe93237C50D904957Cf27E7B1133b510C669c2e74;
+    address constant M_GOOGL = 0x2e0847E8910a9732eB3fb1bb4b70a580ADAD4FE3;
+    address constant M_META = 0xc0D6457C16Cc70d6790Dd43521C899C87ce02f35;
+    address constant M_NFLX = 0xE0444EF8BF4eD74f74FD73686e2ddF4C1c5591E8;
+    address constant M_AMD = 0x86923f96303D656E4aa86D9d42D1e57ad2023fdC;
+    address constant M_PLTR = 0x894E1EC2D74FFE5AEF8Dc8A9e84686acCB964F2A;
+    address constant M_QQQ = 0xD5f3879160bc7c32ebb4dC785F8a4F505888de68;
+    address constant M_GLD = 0xC9a981FEE1F9DEc688bb123ccDeCc63D0deBFC4e;
+    address constant M_SPCX = 0x4a0E65A3EcceC6dBe60AE065F2e7bb85Fae35eEa;
+    address constant M_MSTR = 0xec262a75e413fAfD0dF80480274532C79D42da09;
+    address constant MP_MSFT = 0xeb60bCD1D920ad6E102690CCFC6fB488899E1510; // MSFT/USDG 0.3%
+    address constant MP_GOOGL = 0x34D0dC122CF9A8Eb296fC5e0D3A233625D7d19b7; // GOOGL/USDG 0.05%
+    address constant MP_META = 0x107a7Cb40d8665360ba10E59471Af06150A50922; // META/USDG 0.3%
+    address constant MP_NFLX = 0x59895C0302F41aEaa129D2fa2442CEc01E7eF45E; // NFLX/USDG 0.3%
+    address constant MP_AMD = 0x48D284A2A4d3DC1b3Da08231Fe44317e7e7Aa51f; // AMD/USDG 0.3%
+    address constant MP_PLTR = 0x851680416A4f4E1c463d45171d61ACDdBc8554c0; // PLTR/USDG 0.3%
+    address constant MP_QQQ = 0xD60A5d14dB690B7Afad71F76B108071D7175597d; // QQQ/USDG 0.05%
+    address constant MP_GLD = 0x7A6A053eCCf1446A2633E05aA6D40D09381997ec; // GLD/USDG 0.3%
+    address constant MP_SPCX = 0xc61284332117c3FB23A2A56cceFFD07F7aF60029; // SPCX/USDG 0.05%
+    address constant MP_MSTR = 0x17578C0e0D15da44f31677263114F71aE76653EA; // MSTR/USDG 1%
     address constant M_WETH = 0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73; // 18 decimals, WETH9 deposit/withdraw
     address constant M_ETH_POOL = 0x52e65B17fB6E5BA00Ed806f37Afcd2DaA50271Ca; // WETH/USDG 0.01%, token0 = WETH
     address constant M_UNI_V3_FACTORY = 0x1f7d7550B1b028f7571E69A784071F0205FD2EfA; // canonical Uniswap v3 factory on 4663
@@ -127,12 +145,18 @@ contract Deploy is Script {
         // no verified WETH/USDC pool is recorded for the testnet: both are required here
         address wethAddr = vm.envAddress("WETH");
         address ethPool = vm.envAddress("ETH_POOL");
+        address factory = vm.envAddress("FACTORY");
         console2.log("WETH:       %s", wethAddr);
         console2.log("ETH_POOL:   %s", ethPool);
+        console2.log("FACTORY:    %s", factory);
         _checkEthPool(T_USDC, wethAddr, ethPool);
+        _checkFactoryPool(factory, ethPool, wethAddr, T_USDC);
+        for (uint256 i; i < tokens.length; i++) {
+            _checkFactoryPool(factory, pools[i], tokens[i], T_USDC);
+        }
 
         vm.startBroadcast();
-        Deployed memory d = _deployCore(T_USDC, unit, msg.sender, tokens, pools, wethAddr, ethPool);
+        Deployed memory d = _deployCore(T_USDC, unit, msg.sender, tokens, pools, wethAddr, ethPool, factory);
         _ensureOracle(ethPool);
         vm.stopBroadcast();
         _printAddresses(d, T_USDC, unit, wethAddr, ethPool);
@@ -152,6 +176,7 @@ contract Deploy is Script {
         uint256 feeBps = vm.envOr("FEE_BPS", uint256(100));
         address wethAddr = vm.envOr("WETH", M_WETH);
         address ethPool = vm.envOr("ETH_POOL", M_ETH_POOL);
+        address factory = vm.envOr("FACTORY", M_UNI_V3_FACTORY);
         (address[] memory tokens, address[] memory pools) = _mainnetMenu();
 
         // ---- log every address before use ----
@@ -163,6 +188,7 @@ contract Deploy is Script {
         console2.log("FEE_BPS:    %s", feeBps);
         console2.log("WETH:       %s", wethAddr);
         console2.log("ETH_POOL:   %s", ethPool);
+        console2.log("FACTORY:    %s", factory);
         for (uint256 i; i < tokens.length; i++) {
             console2.log("menu[%s] token %s pool %s", i, tokens[i], pools[i]);
         }
@@ -177,6 +203,7 @@ contract Deploy is Script {
         require(feeBps <= 500, "Deploy: FEE_BPS above the 5% code ceiling");
         require(keeper != address(0), "Deploy: KEEPER is zero");
         require(finalOwner != address(0), "Deploy: OWNER is zero");
+        require(factory.code.length > 0, "Deploy: FACTORY has no code");
         for (uint256 i; i < tokens.length; i++) {
             require(tokens[i].code.length > 0, "Deploy: menu token has no code");
             require(pools[i].code.length > 0, "Deploy: menu pool has no code");
@@ -188,9 +215,9 @@ contract Deploy is Script {
         _checkEthPool(stable, wethAddr, ethPool);
         // provenance: every pool the modules swap on must be the factory's own
         // pool for its pair and fee tier, not a lookalike passed in by env
-        _checkFactoryPool(ethPool, wethAddr, stable);
+        _checkFactoryPool(factory, ethPool, wethAddr, stable);
         for (uint256 i; i < tokens.length; i++) {
-            _checkFactoryPool(pools[i], tokens[i], stable);
+            _checkFactoryPool(factory, pools[i], tokens[i], stable);
         }
 
         if (treasury == address(0)) {
@@ -203,7 +230,7 @@ contract Deploy is Script {
 
         // ---- deploy ----
         vm.startBroadcast();
-        Deployed memory d = _deployCore(stable, unit, treasury, tokens, pools, wethAddr, ethPool);
+        Deployed memory d = _deployCore(stable, unit, treasury, tokens, pools, wethAddr, ethPool, factory);
         _ensureOracle(ethPool);
         if (keeper != deployer) d.sweeper.setKeeper(keeper);
         if (feeBps != 100) d.sweeper.setFeeBps(uint16(feeBps));
@@ -221,16 +248,26 @@ contract Deploy is Script {
         }
     }
 
-    /// Launch menu: the five (token, pool) pairs from MAINNET-ADDRESSES.md unless
-    /// MENU_TOKENS / MENU_POOLS override them.
+    /// v3 menu: the fifteen verified (token, pool) pairs from
+    /// MAINNET-ADDRESSES.md unless MENU_TOKENS / MENU_POOLS override them.
     function _mainnetMenu() internal view returns (address[] memory tokens, address[] memory pools) {
-        address[] memory defTokens = new address[](5);
-        address[] memory defPools = new address[](5);
-        defTokens[0] = M_TSLA; defPools[0] = MP_TSLA;
-        defTokens[1] = M_NVDA; defPools[1] = MP_NVDA;
-        defTokens[2] = M_AAPL; defPools[2] = MP_AAPL;
-        defTokens[3] = M_AMZN; defPools[3] = MP_AMZN;
-        defTokens[4] = M_SPY;  defPools[4] = MP_SPY;
+        address[] memory defTokens = new address[](15);
+        address[] memory defPools = new address[](15);
+        defTokens[0] = M_TSLA;   defPools[0] = MP_TSLA;
+        defTokens[1] = M_NVDA;   defPools[1] = MP_NVDA;
+        defTokens[2] = M_AAPL;   defPools[2] = MP_AAPL;
+        defTokens[3] = M_AMZN;   defPools[3] = MP_AMZN;
+        defTokens[4] = M_SPY;    defPools[4] = MP_SPY;
+        defTokens[5] = M_MSFT;   defPools[5] = MP_MSFT;
+        defTokens[6] = M_GOOGL;  defPools[6] = MP_GOOGL;
+        defTokens[7] = M_META;   defPools[7] = MP_META;
+        defTokens[8] = M_NFLX;   defPools[8] = MP_NFLX;
+        defTokens[9] = M_AMD;    defPools[9] = MP_AMD;
+        defTokens[10] = M_PLTR;  defPools[10] = MP_PLTR;
+        defTokens[11] = M_QQQ;   defPools[11] = MP_QQQ;
+        defTokens[12] = M_GLD;   defPools[12] = MP_GLD;
+        defTokens[13] = M_SPCX;  defPools[13] = MP_SPCX;
+        defTokens[14] = M_MSTR;  defPools[14] = MP_MSTR;
         tokens = vm.envOr("MENU_TOKENS", ",", defTokens);
         pools = vm.envOr("MENU_POOLS", ",", defPools);
         require(tokens.length > 0, "Deploy: empty menu");
@@ -245,11 +282,12 @@ contract Deploy is Script {
         address[] memory tokens,
         address[] memory pools,
         address wethAddr,
-        address ethPool
+        address ethPool,
+        address factory
     ) internal returns (Deployed memory d) {
         d.vault = new DustVault(IERC20(stable));
-        d.router = new DustRouter(IERC20(stable), IDustVault(address(d.vault)), unit);
-        d.sweeper = new DustSweeper(IERC20(stable), IDustVault(address(d.vault)), treasury);
+        d.router = new DustRouter(IERC20(stable), IDustVault(address(d.vault)), unit, IV3Factory(factory));
+        d.sweeper = new DustSweeper(IERC20(stable), IDustVault(address(d.vault)), treasury, IV3Factory(factory));
         // curate the menu of buyable stocks; users compose their own baskets from it
         for (uint256 i; i < tokens.length; i++) {
             d.sweeper.listStock(tokens[i], pools[i]);
@@ -259,7 +297,8 @@ contract Deploy is Script {
             IDustVault(address(d.vault)),
             IKeeperSource(address(d.sweeper)),
             IWETH(wethAddr),
-            IV3Pool(ethPool)
+            IV3Pool(ethPool),
+            IV3Factory(factory)
         );
         d.vault.setModules(address(d.router), address(d.sweeper), address(d.capture));
     }
@@ -278,12 +317,14 @@ contract Deploy is Script {
         console2.log("ETH_POOL oracle cardinality %s (next %s), WETH is token%s", card, cardNext, t0 == wethAddr ? 0 : 1);
     }
 
-    /// Mainnet only: the pool must report the canonical factory and the factory
-    /// must resolve (tokenA, tokenB, fee) back to this very pool.
-    function _checkFactoryPool(address pool, address tokenA, address tokenB) internal view {
-        require(IV3PoolMeta(pool).factory() == M_UNI_V3_FACTORY, "Deploy: pool not from the canonical Uniswap v3 factory");
+    /// The pool must report `factory` and the factory must resolve
+    /// (tokenA, tokenB, fee) back to this very pool. The same check runs again
+    /// inside every module (constructor / listStock), so a pool that fails
+    /// here would also fail on-chain.
+    function _checkFactoryPool(address factory, address pool, address tokenA, address tokenB) internal view {
+        require(IV3PoolMeta(pool).factory() == factory, "Deploy: pool not from the configured factory");
         uint24 fee = IV3PoolMeta(pool).fee();
-        require(IV3Factory(M_UNI_V3_FACTORY).getPool(tokenA, tokenB, fee) == pool, "Deploy: factory does not know this pool");
+        require(IV3Factory(factory).getPool(tokenA, tokenB, fee) == pool, "Deploy: factory does not know this pool");
     }
 
     /// Inside the broadcast: grow the pool's oracle buffer if it is too small
@@ -300,12 +341,13 @@ contract Deploy is Script {
 
     function _printAddresses(Deployed memory d, address stable, uint256 unit, address wethAddr, address ethPool)
         internal
-        pure
+        view
     {
         console2.log("DUST_STABLE=%s", stable);
         console2.log("DUST_STABLE_UNIT=%s", unit);
         console2.log("DUST_WETH=%s", wethAddr);
         console2.log("DUST_ETH_POOL=%s", ethPool);
+        console2.log("DUST_FACTORY=%s", address(d.sweeper.factory()));
         console2.log("DUST_VAULT=%s", address(d.vault));
         console2.log("DUST_ROUTER=%s", address(d.router));
         console2.log("DUST_SWEEPER=%s", address(d.sweeper));

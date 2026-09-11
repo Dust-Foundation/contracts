@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.0;
+pragma solidity 0.8.35;
 
 /// @title Contains 512-bit math functions
 /// @notice Facilitates multiplication and division that can have overflow of an intermediate value without any loss of precision
 /// @dev Handles "phantom overflow" i.e., allows multiplication and division where an intermediate value overflows 256 bits
-/// @dev Vendored from Uniswap v3-core (Solidity 0.8 branch). Unmodified apart from this note.
+/// @dev Vendored from Uniswap v3-core (Solidity 0.8 branch). Deviation from upstream: the
+/// floating `^0.8.0` pragma is pinned to 0.8.35 (audit L005) so the bytecode is reproducible
+/// from source. Otherwise unmodified apart from this note.
 library FullMath {
     /// @notice Calculates floor(a×b÷denominator) with full precision. Throws if result overflows a uint256 or denominator == 0
     /// @param a The multiplicand

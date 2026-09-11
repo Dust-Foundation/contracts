@@ -1,74 +1,31 @@
 // SPDX-License-Identifier: BUSL-1.1
-pragma solidity ^0.8.24;
+pragma solidity 0.8.35;
 
 import {Test} from "forge-std/Test.sol";
 import {DustVault} from "../src/DustVault.sol";
 import {DustRouter} from "../src/DustRouter.sol";
 import {DustSweeper} from "../src/DustSweeper.sol";
-import {IERC20, IDustVault} from "../src/interfaces/IDust.sol";
-
-contract MockERC20 {
-    string public symbol;
-    uint8 public decimals;
-    mapping(address => uint256) public balanceOf;
-    mapping(address => mapping(address => uint256)) public allowance;
-
-    constructor(string memory _sym, uint8 _dec) {
-        symbol = _sym;
-        decimals = _dec;
-    }
-
-    function mint(address to, uint256 amt) external {
-        balanceOf[to] += amt;
-    }
-
-    function approve(address spender, uint256 amt) external returns (bool) {
-        allowance[msg.sender][spender] = amt;
-        return true;
-    }
-
-    function transfer(address to, uint256 amt) external returns (bool) {
-        require(balanceOf[msg.sender] >= amt, "bal");
-        balanceOf[msg.sender] -= amt;
-        balanceOf[to] += amt;
-        return true;
-    }
-
-    function transferFrom(address from, address to, uint256 amt) external returns (bool) {
-        require(balanceOf[from] >= amt, "bal");
-        uint256 a = allowance[from][msg.sender];
-        require(a >= amt, "allow");
-        if (a != type(uint256).max) allowance[from][msg.sender] = a - amt;
-        balanceOf[from] -= amt;
-        balanceOf[to] += amt;
-        return true;
-    }
-}
-
-contract MockPool {
-    address public token0;
-    address public token1;
-
-    constructor(address _t0, address _t1) {
-        token0 = _t0;
-        token1 = _t1;
-    }
-}
+import {IERC20, IDustVault, IV3Factory} from "../src/interfaces/IDust.sol";
+import {MockERC20, MockSwapPool} from "./mocks/SweeperMocks.sol";
+import {MockFactory} from "./mocks/CaptureMocks.sol";
 
 contract DustUnitTest is Test {
     MockERC20 stable;
+    MockFactory factory;
     DustVault vault;
     DustRouter router;
 
     uint256 constant UNIT = 1e18;
+    int24 constant TICK = 0; // 1:1 price, plenty for config tests
     address alice = makeAddr("alice");
     address bob = makeAddr("bob");
     address treasury = makeAddr("treasury");
 
     function setUp() public {
         stable = new MockERC20("USDG", 18);
+        factory = new MockFactory();
         vault = new DustVault(IERC20(address(stable)));
-        router = new DustRouter(IERC20(address(stable)), IDustVault(address(vault)), UNIT);
+        router = new DustRouter(IERC20(address(stable)), IDustVault(address(vault)), UNIT, IV3Factory(address(factory)));
         // sweeper not needed for unit tests of vault/router surfaces; wire a stub
         vault.setModules(address(router), address(this), address(0));
     }
@@ -107,11 +64,14 @@ contract DustUnitTest is Test {
 
     // ---- USDG readiness: the same math at 6 decimals (mainnet stable) ----
 
-    function test_roundUp_sixDecimalStable() public {
+    function _router6() internal returns (DustRouter r6) {
         MockERC20 usdg = new MockERC20("USDG", 6);
         DustVault v6 = new DustVault(IERC20(address(usdg)));
-        DustRouter r6 = new DustRouter(IERC20(address(usdg)), IDustVault(address(v6)), 1e6);
+        r6 = new DustRouter(IERC20(address(usdg)), IDustVault(address(v6)), 1e6, IV3Factory(address(factory)));
+    }
 
+    function test_roundUp_sixDecimalStable() public {
+        DustRouter r6 = _router6();
         // 137.42 USDG at 6 decimals
         assertEq(r6.roundUpAmount(137_420_000, 1, 1), 580_000);      // -> 0.58
         assertEq(r6.roundUpAmount(137_420_000, 5, 1), 2_580_000);    // -> 2.58
@@ -122,10 +82,7 @@ contract DustUnitTest is Test {
     }
 
     function testFuzz_roundUp_sixDecimals(uint256 amountIn, uint8 gRaw, uint8 mRaw) public {
-        MockERC20 usdg = new MockERC20("USDG", 6);
-        DustVault v6 = new DustVault(IERC20(address(usdg)));
-        DustRouter r6 = new DustRouter(IERC20(address(usdg)), IDustVault(address(v6)), 1e6);
-
+        DustRouter r6 = _router6();
         uint256 g = bound(uint256(gRaw), 1, 100);
         uint256 m = bound(uint256(mRaw), 1, 10);
         amountIn = bound(amountIn, 1, 1e18); // up to a trillion USDG
@@ -199,13 +156,24 @@ contract DustUnitTest is Test {
     // ---- sweeper config ----
 
     function _newSweeper() internal returns (DustSweeper) {
-        return new DustSweeper(IERC20(address(stable)), IDustVault(address(vault)), treasury);
+        return new DustSweeper(
+            IERC20(address(stable)), IDustVault(address(vault)), treasury, IV3Factory(address(factory))
+        );
     }
 
+    /// A canonical (factory-registered) pool pairing the stable with a fresh token.
     function _list(DustSweeper s, string memory sym) internal returns (address token) {
         token = address(new MockERC20(sym, 18));
-        MockPool p = new MockPool(address(stable), token); // pool pairs stable<->token
+        MockSwapPool p = new MockSwapPool(address(stable), token, TICK);
+        factory.register(address(p));
         s.listStock(token, address(p));
+    }
+
+    function test_sweeper_constructorRejectsZeroFactory() public {
+        vm.expectRevert(DustSweeper.ZeroAddress.selector);
+        new DustSweeper(IERC20(address(stable)), IDustVault(address(vault)), treasury, IV3Factory(address(0)));
+        vm.expectRevert(DustRouter.BadParams.selector);
+        new DustRouter(IERC20(address(stable)), IDustVault(address(vault)), UNIT, IV3Factory(address(0)));
     }
 
     function test_sweeper_menuListing() public {
@@ -215,7 +183,8 @@ contract DustUnitTest is Test {
         assertTrue(s.poolFor(tA) != address(0));
 
         // can't list twice
-        MockPool p2 = new MockPool(address(stable), tA);
+        MockSwapPool p2 = new MockSwapPool(address(stable), tA, TICK);
+        factory.register(address(p2));
         vm.expectRevert(DustSweeper.AlreadyListed.selector);
         s.listStock(tA, address(p2));
 
@@ -229,15 +198,36 @@ contract DustUnitTest is Test {
         DustSweeper s = _newSweeper();
         address tA = address(new MockERC20("A", 18));
         address wrong = address(new MockERC20("W", 18));
-        MockPool p = new MockPool(address(stable), wrong); // pairs stable/wrong, not tA
+        MockSwapPool p = new MockSwapPool(address(stable), wrong, TICK); // pairs stable/wrong, not tA
+        factory.register(address(p));
         vm.expectRevert(DustSweeper.BadListing.selector);
         s.listStock(tA, address(p));
+    }
+
+    /// Audit L002: a pool with the right pairing that the factory does not
+    /// acknowledge cannot be listed.
+    function test_sweeper_rejectsNonCanonicalPool() public {
+        DustSweeper s = _newSweeper();
+        address tA = address(new MockERC20("A", 18));
+        MockSwapPool lookalike = new MockSwapPool(address(stable), tA, TICK); // never registered
+        vm.expectRevert(DustSweeper.BadListing.selector);
+        s.listStock(tA, address(lookalike));
+        // a registered pool for the same pair but a different fee tier is a different pool
+        MockSwapPool canonical = new MockSwapPool(address(stable), tA, TICK);
+        canonical.setFee(500);
+        factory.register(address(canonical));
+        lookalike.setFee(500);
+        vm.expectRevert(DustSweeper.BadListing.selector);
+        s.listStock(tA, address(lookalike));
+        s.listStock(tA, address(canonical));
+        assertEq(s.poolFor(tA), address(canonical));
     }
 
     function test_sweeper_onlyOwnerCanListStock() public {
         DustSweeper s = _newSweeper();
         address tA = address(new MockERC20("A", 18));
-        MockPool p = new MockPool(address(stable), tA);
+        MockSwapPool p = new MockSwapPool(address(stable), tA, TICK);
+        factory.register(address(p));
         vm.prank(alice);
         vm.expectRevert(DustSweeper.NotAuthorized.selector);
         s.listStock(tA, address(p));
@@ -297,9 +287,10 @@ contract DustUnitTest is Test {
         DustSweeper s = _newSweeper();
         _list(s, "A");
         uint256[] memory minOuts = new uint256[](0);
+        address[] memory pools = new address[](0);
         vm.prank(alice);
         vm.expectRevert(DustSweeper.NoBasket.selector);
-        s.sweep(alice, minOuts, 0);
+        s.sweep(alice, 0, pools, minOuts, 0, 100);
     }
 
     function test_sweeper_feeConfig() public {
@@ -307,6 +298,9 @@ contract DustUnitTest is Test {
         assertEq(s.feeBps(), 100, "1% default");
         assertEq(s.treasury(), treasury);
         assertEq(s.MAX_FEE_BPS(), 500);
+        assertEq(s.MAX_SWEEP_SLIPPAGE_BPS(), 300);
+        assertEq(s.TWAP_WINDOW(), 600);
+        assertEq(s.MIN_SWEEP_INTERVAL(), 300);
 
         s.setFeeBps(250);
         assertEq(s.feeBps(), 250);

@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: BUSL-1.1
-pragma solidity ^0.8.24;
+pragma solidity 0.8.35;
 
 import {IERC20} from "./interfaces/IDust.sol";
+import {SafeTransfer} from "./libraries/SafeTransfer.sol";
 
 /// @title DustVault
 /// @notice Custody and per-user ledger for Dust. Holds users' accrued stable
@@ -16,7 +17,15 @@ import {IERC20} from "./interfaces/IDust.sol";
 ///    re-accrue unspent stable, and credit bought tokens. Both set exactly once.
 ///  - Vault balances are per-user accounting entries; no pooled shares, no
 ///    cross-user math, nothing to manipulate with donations.
+///
+/// v3 (audit response): logic unchanged; every token movement goes through
+/// SafeTransfer (L003) and the compiler is pinned (L005). Known limitation,
+/// accepted (L001, issuer-freeze variant): if the stablecoin issuer freezes the
+/// immutable sweeper address, debitAccrued reverts and sweeping stops for
+/// everyone until a redeploy; withdrawals here keep working throughout.
 contract DustVault {
+    using SafeTransfer for IERC20;
+
     IERC20 public immutable stable;
     address public owner;
     address public router;
@@ -76,7 +85,7 @@ contract DustVault {
         uint256 bal = accruedStable[user];
         if (amount > bal) revert InsufficientBalance();
         accruedStable[user] = bal - amount;
-        if (!stable.transfer(sweeper, amount)) revert TransferFailed();
+        stable.safeTransfer(sweeper, amount);
         emit AccruedDebited(user, amount);
     }
 
@@ -106,7 +115,7 @@ contract DustVault {
         uint256 bal = accruedStable[msg.sender];
         if (amount > bal) revert InsufficientBalance();
         accruedStable[msg.sender] = bal - amount;
-        if (!stable.transfer(to, amount)) revert TransferFailed();
+        stable.safeTransfer(to, amount);
         emit AccruedWithdrawn(msg.sender, to, amount);
     }
 
@@ -114,7 +123,7 @@ contract DustVault {
         uint256 bal = tokenBalance[msg.sender][token];
         if (amount > bal) revert InsufficientBalance();
         tokenBalance[msg.sender][token] = bal - amount;
-        if (!IERC20(token).transfer(to, amount)) revert TransferFailed();
+        IERC20(token).safeTransfer(to, amount);
         emit TokensWithdrawn(msg.sender, token, to, amount);
     }
 

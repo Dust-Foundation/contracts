@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: BUSL-1.1
-pragma solidity ^0.8.24;
+pragma solidity 0.8.35;
 
 import {Test, Vm, console2} from "forge-std/Test.sol";
 import {DustVault} from "../src/DustVault.sol";
 import {DustRouter} from "../src/DustRouter.sol";
 import {DustSweeper} from "../src/DustSweeper.sol";
 import {DustCapture, IKeeperSource} from "../src/DustCapture.sol";
-import {IERC20, IWETH, IV3Pool, IDustVault} from "../src/interfaces/IDust.sol";
+import {IERC20, IWETH, IV3Pool, IV3Factory, IV3PoolMeta, IDustVault} from "../src/interfaces/IDust.sol";
+import {MockSwapPool} from "./mocks/SweeperMocks.sol";
 
 interface IPoolOracle {
     function observe(uint32[] calldata secondsAgos)
@@ -68,22 +69,33 @@ interface IRegistry {
 }
 
 /// Stand-in for an initialized Uniswap v3 pool with zero liquidity: same
-/// token pairing as the real pool, and a swap that fills nothing. The real
-/// dead TSLA/USDG 0.05% pool ends the same way (LegSkipped) but only after
-/// walking ~700 empty tick-bitmap words, which is ~700 uncached storage reads
-/// on a fresh fork block and flaky on the public RPC. The real-pool version of
-/// the test is kept behind MAINNET_FORK_HEAVY=1.
+/// token pairing and fee tier as the real TSLA/USDG 0.05% pool, an oracle that
+/// forwards to the live TSLA/USDG 0.3% pool (so the v3 TWAP floor can be
+/// computed), and a swap that fills nothing. The test maps it into the real
+/// factory with vm.mockCall so listStock's provenance check accepts it.
 contract EmptyPoolStub {
     address public immutable token0;
     address public immutable token1;
+    address public immutable oracle;
+    address public immutable factory;
 
-    constructor(address t0, address t1) {
+    constructor(address t0, address t1, address _oracle, address _factory) {
         token0 = t0;
         token1 = t1;
+        oracle = _oracle;
+        factory = _factory;
+    }
+
+    function fee() external pure returns (uint24) {
+        return 500;
     }
 
     function liquidity() external pure returns (uint128) {
         return 0;
+    }
+
+    function observe(uint32[] calldata secondsAgos) external view returns (int56[] memory, uint160[] memory) {
+        return IV3Pool(oracle).observe(secondsAgos);
     }
 
     function swap(address, bool, int256, uint160, bytes calldata) external pure returns (int256, int256) {
@@ -91,11 +103,35 @@ contract EmptyPoolStub {
     }
 }
 
+/// Minimal exact-input swapper that pays the pool from its own balance; used
+/// to move a live pool's spot price away from its TWAP.
+contract PoolSwapper {
+    uint160 constant MIN_SQRT_RATIO = 4295128739;
+    uint160 constant MAX_SQRT_RATIO = 1461446703485210103287273052203988822378723970342;
+
+    function buy(address pool, address tokenIn, uint256 amountIn) external returns (int256 a0, int256 a1) {
+        bool zeroForOne = IV3Pool(pool).token0() == tokenIn;
+        (a0, a1) = IV3Pool(pool).swap(
+            address(this), zeroForOne, int256(amountIn), zeroForOne ? MIN_SQRT_RATIO + 1 : MAX_SQRT_RATIO - 1, abi.encode(tokenIn)
+        );
+    }
+
+    function uniswapV3SwapCallback(int256 a0, int256 a1, bytes calldata data) external {
+        address tokenIn = abi.decode(data, (address));
+        int256 owed = IV3Pool(msg.sender).token0() == tokenIn ? a0 : a1;
+        require(owed > 0, "nothing owed");
+        require(IERC20(tokenIn).transfer(msg.sender, uint256(owed)), "pay");
+    }
+}
+
 /// End-to-end against REAL Robinhood Chain mainnet state (chain id 4663), in a
-/// local fork. Nothing here broadcasts; the fork is a simulation. The Dust
-/// contracts are deployed fresh into the fork against real USDG (6 decimals)
-/// and the five verified launch pools, then the full loop runs: menu -> basket
-/// -> round-up -> keeper sweep with TWAP-derived minOuts -> in-kind withdraw.
+/// local fork. Nothing here broadcasts; the fork is a simulation. The v3 Dust
+/// contracts are deployed fresh into the fork against real USDG (6 decimals),
+/// the canonical Uniswap v3 factory and the five verified launch pools, then
+/// the full loop runs: menu -> basket -> round-up -> keeper sweep with
+/// TWAP-derived minOuts -> in-kind withdraw. The audit reproductions (H001
+/// against the thin TSLA/USDG 0.05% pool, M003 against a moved price, L001
+/// against a frozen treasury on real USDG) live here too.
 ///
 /// The public RPC rate-limits hard (HTTP 429 on bursts). Run with retries:
 ///   FOUNDRY_FORK_RETRIES=5 FOUNDRY_FORK_RETRY_BACKOFF=2000 \
@@ -129,8 +165,32 @@ contract DustMainnetForkTest is Test {
     address constant P_AAPL = 0xAae0d815EE56e4092a5E5C2911E676Fea50B2d6D; // 0.05%
     address constant P_AMZN = 0x8AC92DA74AB5F3b1d024Dc1943Ad7e15Dc4179Ef; // 0.3%
     address constant P_SPY = 0xa7Bb1AC63BBaB0C44316E6c8C455213441689167; // 0.05%
-    /// TSLA/USDG 0.05% pool: initialized but EMPTY (liquidity 0, at MIN_SQRT_RATIO).
-    address constant P_TSLA_EMPTY = 0xc4f0172D6ac8DD294Dd1137D047d5E1893760236;
+    /// TSLA/USDG 0.05% pool: the THIN pool of audit finding H001 (liquidity ~3.9e16
+    /// on 2026-09-11, no oracle history). Empty at launch, funded since.
+    address constant P_TSLA_THIN = 0xc4f0172D6ac8DD294Dd1137D047d5E1893760236;
+    address constant FACTORY = 0x1f7d7550B1b028f7571E69A784071F0205FD2EfA; // canonical Uniswap v3 factory
+
+    // ---- menu expansion (2026-09-09) ----
+    address constant MSFT = 0xe93237C50D904957Cf27E7B1133b510C669c2e74;
+    address constant GOOGL = 0x2e0847E8910a9732eB3fb1bb4b70a580ADAD4FE3;
+    address constant META = 0xc0D6457C16Cc70d6790Dd43521C899C87ce02f35;
+    address constant NFLX = 0xE0444EF8BF4eD74f74FD73686e2ddF4C1c5591E8;
+    address constant AMD = 0x86923f96303D656E4aa86D9d42D1e57ad2023fdC;
+    address constant PLTR = 0x894E1EC2D74FFE5AEF8Dc8A9e84686acCB964F2A;
+    address constant QQQ = 0xD5f3879160bc7c32ebb4dC785F8a4F505888de68;
+    address constant GLD = 0xC9a981FEE1F9DEc688bb123ccDeCc63D0deBFC4e;
+    address constant SPCX = 0x4a0E65A3EcceC6dBe60AE065F2e7bb85Fae35eEa;
+    address constant MSTR = 0xec262a75e413fAfD0dF80480274532C79D42da09;
+    address constant P_MSFT = 0xeb60bCD1D920ad6E102690CCFC6fB488899E1510;
+    address constant P_GOOGL = 0x34D0dC122CF9A8Eb296fC5e0D3A233625D7d19b7;
+    address constant P_META = 0x107a7Cb40d8665360ba10E59471Af06150A50922;
+    address constant P_NFLX = 0x59895C0302F41aEaa129D2fa2442CEc01E7eF45E;
+    address constant P_AMD = 0x48D284A2A4d3DC1b3Da08231Fe44317e7e7Aa51f;
+    address constant P_PLTR = 0x851680416A4f4E1c463d45171d61ACDdBc8554c0;
+    address constant P_QQQ = 0xD60A5d14dB690B7Afad71F76B108071D7175597d;
+    address constant P_GLD = 0x7A6A053eCCf1446A2633E05aA6D40D09381997ec;
+    address constant P_SPCX = 0xc61284332117c3FB23A2A56cceFFD07F7aF60029;
+    address constant P_MSTR = 0x17578C0e0D15da44f31677263114F71aE76653EA;
 
     /// blocks behind head to pin at when MAINNET_FORK_BLOCK is unset (~10 s)
     uint256 constant FORK_LAG = 100;
@@ -180,10 +240,15 @@ contract DustMainnetForkTest is Test {
         UNIT = 10 ** uint256(dec);
 
         vault = new DustVault(IERC20(USDG));
-        router = new DustRouter(IERC20(USDG), IDustVault(address(vault)), UNIT);
-        sweeper = new DustSweeper(IERC20(USDG), IDustVault(address(vault)), treasury);
+        router = new DustRouter(IERC20(USDG), IDustVault(address(vault)), UNIT, IV3Factory(FACTORY));
+        sweeper = new DustSweeper(IERC20(USDG), IDustVault(address(vault)), treasury, IV3Factory(FACTORY));
         capture = new DustCapture(
-            IERC20(USDG), IDustVault(address(vault)), IKeeperSource(address(sweeper)), IWETH(WETH), IV3Pool(ETH_POOL)
+            IERC20(USDG),
+            IDustVault(address(vault)),
+            IKeeperSource(address(sweeper)),
+            IWETH(WETH),
+            IV3Pool(ETH_POOL),
+            IV3Factory(FACTORY)
         );
         for (uint256 i; i < 5; i++) {
             sweeper.listStock(TOKENS[i], POOLS[i]);
@@ -244,18 +309,34 @@ contract DustMainnetForkTest is Test {
         vm.stopPrank();
     }
 
+    /// v3 slicing: the investable amount reserves exactly the fee on a full fill.
+    function _investable(uint256 amount) internal view returns (uint256) {
+        uint16 fb = sweeper.feeBps(); // slicing depends on feeBps alone, never on the treasury
+        return fb == 0 ? amount : (amount * 10_000) / (10_000 + fb);
+    }
+
+    /// Keeper sweeps `user` with the pinned v3 inputs: live accrued as maxAmount,
+    /// poolFor per leg, current basketNonce and feeBps.
+    function _sweep(address user, uint256[] memory minOuts) internal {
+        DustSweeper.Leg[] memory legs = sweeper.basketOf(user);
+        address[] memory pools = new address[](legs.length);
+        for (uint256 i; i < legs.length; i++) pools[i] = sweeper.poolFor(legs[i].token);
+        uint256 amount = vault.accruedStable(user);
+        uint256 nonce = sweeper.basketNonce(user);
+        uint16 fb = sweeper.feeBps();
+        vm.prank(keeper);
+        sweeper.sweep(user, amount, pools, minOuts, nonce, fb);
+    }
+
     /// Per-leg minOuts the way keeper/quote.mjs derives them: TWAP tick over
     /// TWAP_WINDOW via observe(), spot tick fallback if the pool has no oracle
     /// history, then expectedOut * (1 - tolerance). Slices mirror the sweeper's
-    /// allocation (fee off the top, last leg takes the remainder).
+    /// v3 allocation (fee reserve, last leg takes the remainder).
     function _twapMinOuts(address user, uint256 amount) internal view returns (uint256[] memory minOuts) {
         DustSweeper.Leg[] memory legs = sweeper.basketOf(user);
         uint256 n = legs.length;
         minOuts = new uint256[](n);
-        uint256 fee = (sweeper.treasury() != address(0) && sweeper.feeBps() > 0)
-            ? (amount * sweeper.feeBps()) / 10_000
-            : 0;
-        uint256 investable = amount - fee;
+        uint256 investable = _investable(amount);
         uint256 allocated;
         for (uint256 i; i < n; i++) {
             uint256 legIn = i == n - 1 ? investable - allocated : (investable * legs[i].weightBps) / 10_000;
@@ -354,6 +435,31 @@ contract DustMainnetForkTest is Test {
             );
         }
         assertEq(router.unit(), 1e6, "router unit must be 1e6 for USDG");
+        assertEq(address(sweeper.factory()), FACTORY);
+        assertEq(address(router.factory()), FACTORY);
+        assertEq(address(capture.factory()), FACTORY);
+    }
+
+    /// The fifteen-pair v3 default menu (Deploy.s.sol) all pass listStock's
+    /// canonical-factory check on live state, and every pool serves the
+    /// 10-minute TWAP the sweep floor needs.
+    function test_menuExpansionPoolsAreCanonicalAndServeTwap() public {
+        DustSweeper fresh = new DustSweeper(IERC20(USDG), IDustVault(address(vault)), treasury, IV3Factory(FACTORY));
+        address[15] memory toks = [TSLA, NVDA, AAPL, AMZN, SPY, MSFT, GOOGL, META, NFLX, AMD, PLTR, QQQ, GLD, SPCX, MSTR];
+        address[15] memory pools =
+            [P_TSLA, P_NVDA, P_AAPL, P_AMZN, P_SPY, P_MSFT, P_GOOGL, P_META, P_NFLX, P_AMD, P_PLTR, P_QQQ, P_GLD, P_SPCX, P_MSTR];
+        for (uint256 i; i < 15; i++) {
+            fresh.listStock(toks[i], pools[i]);
+            assertEq(IV3PoolMeta(pools[i]).factory(), FACTORY);
+            uint256 floor = fresh.twapFloor(pools[i], 1 * UNIT);
+            assertGt(floor, 0, "TWAP floor must be computable for every menu pool");
+            console2.log("%s pool fee %s, floor for 1 USDG: %s", IStockToken(toks[i]).symbol(), IV3PoolMeta(pools[i]).fee(), floor);
+        }
+        assertEq(fresh.menuLength(), 15);
+        // the thin 0.05% TSLA pool is canonical too, but has no oracle history: it can be
+        // listed and every leg on it is skipped (see test_M003_thinPoolWithoutOracleHistoryIsSkipped)
+        vm.expectRevert(bytes("OLD"));
+        fresh.twapFloor(P_TSLA_THIN, 1 * UNIT);
     }
 
     /// Guards the copied TickMath against every live pool's spot: sqrt(tick) <= slot0.sqrtPrice < sqrt(tick + 1).
@@ -382,17 +488,21 @@ contract DustMainnetForkTest is Test {
 
         uint256 amount = vault.accruedStable(alice);
         uint256[] memory minOuts = _twapMinOuts(alice, amount);
-        uint256 expectedFee = (amount * sweeper.feeBps()) / 10_000; // 1% -> 25_800
+        uint256 investable = _investable(amount); // 2_554_455
+        uint256 expectedFee = (investable * sweeper.feeBps()) / 10_000; // 1% of invested -> 25_544
+        assertEq(nonce, sweeper.basketNonce(alice));
 
-        vm.prank(keeper);
-        sweeper.sweep(alice, minOuts, nonce);
+        _sweep(alice, minOuts);
 
-        // every leg filled: nothing re-accrued, fee to treasury, cost basis = invested
-        assertEq(vault.accruedStable(alice), 0, "full fill should leave nothing accrued");
+        // every leg filled: only a rounding residue re-accrued, fee = 1% of invested, cost basis = invested
+        assertLe(vault.accruedStable(alice), 2, "full fill leaves at most a rounding residue");
         assertEq(IERC20(USDG).balanceOf(treasury), expectedFee, "treasury fee");
-        assertEq(vault.costBasis(alice), amount - expectedFee, "cost basis must equal stable actually invested");
+        assertEq(vault.costBasis(alice), investable, "cost basis must equal stable actually invested");
+        assertEq(expectedFee + investable + vault.accruedStable(alice), amount, "conservation");
         assertEq(IERC20(USDG).balanceOf(address(sweeper)), 0, "sweeper must hold nothing");
-        assertEq(IERC20(USDG).balanceOf(address(vault)), 0, "vault stable fully swept");
+        assertEq(IERC20(USDG).balanceOf(address(vault)), vault.accruedStable(alice), "vault holds only the residue");
+        assertEq(sweeper.basketNonce(alice), nonce + 1, "nonce consumed");
+        assertEq(sweeper.lastSweepAt(alice), block.timestamp);
 
         for (uint256 i; i < 5; i++) {
             uint256 bal = vault.tokenBalanceOf(alice, TOKENS[i]);
@@ -439,12 +549,14 @@ contract DustMainnetForkTest is Test {
         assertGt(quoted, 0, "quoter returned zero");
 
         uint256[] memory minOuts = _twapMinOuts(alice, 10 * UNIT);
-        vm.prank(keeper);
-        sweeper.sweep(alice, minOuts, nonce);
+        uint256 floor = sweeper.twapFloor(P_TSLA, 10 * UNIT);
+        assertEq(nonce, sweeper.basketNonce(alice));
+        _sweep(alice, minOuts);
 
         uint256 got = vault.tokenBalanceOf(alice, TSLA);
-        console2.log("10 USDG -> TSLA: quoter %s, sweep %s", quoted, got);
+        console2.log("10 USDG -> TSLA: quoter %s, sweep %s, on-chain TWAP floor %s", quoted, got, floor);
         assertEq(got, quoted, "sweep fill differs from QuoterV2");
+        assertGe(got, floor, "fill above the on-chain floor");
         assertEq(vault.costBasis(alice), 10 * UNIT);
     }
 
@@ -466,34 +578,35 @@ contract DustMainnetForkTest is Test {
         assertEq(capture.remainingThisWeek(alice), 4_400_000);
 
         uint256[] memory minOuts = _twapMinOuts(alice, 600_000);
-        vm.prank(keeper);
-        sweeper.sweep(alice, minOuts, nonce);
-        assertEq(vault.accruedStable(alice), 0);
+        assertEq(nonce, sweeper.basketNonce(alice));
+        _sweep(alice, minOuts);
+        assertLe(vault.accruedStable(alice), 2);
         assertGt(vault.tokenBalanceOf(alice, SPY), 0);
-        assertEq(vault.costBasis(alice), 600_000 - 6_000); // 1% fee
+        assertEq(vault.costBasis(alice), _investable(600_000)); // 594_059, fee reserved at 1%
+        assertEq(IERC20(USDG).balanceOf(treasury), (_investable(600_000) * 100) / 10_000);
     }
 
     /// A leg routed to an EMPTY pool (initialized, zero liquidity) is skipped
     /// with LegSkipped and its slice returned to the user; the other leg fills.
-    /// Deterministic version: stub pool with the real TSLA/USDG pairing.
+    /// Deterministic version: stub pool with the real TSLA/USDG pairing and the
+    /// real 0.3% pool's oracle, mapped into the canonical factory for its
+    /// (TSLA, USDG, 500) slot so listStock accepts it.
     function test_emptyPoolLegIsSkippedNotFatal() public {
-        address stub = address(new EmptyPoolStub(TSLA, USDG)); // same ordering as the real pools
+        address stub = address(new EmptyPoolStub(TSLA, USDG, P_TSLA, FACTORY));
+        vm.mockCall(FACTORY, abi.encodeCall(IV3Factory.getPool, (TSLA, USDG, 500)), abi.encode(stub));
         _runEmptyPoolCase(stub);
+        vm.clearMockedCalls();
     }
 
-    /// Same case against the REAL dead TSLA/USDG 0.05% pool on mainnet. The
-    /// swap walks the whole tick range before ending the leg, so this test is
-    /// heavy on the RPC (~700 storage reads). Opt in with MAINNET_FORK_HEAVY=1,
-    /// ideally against a paid provider; skipped by default.
-    function test_realEmptyPoolLegIsSkipped_heavy() public {
-        if (!vm.envOr("MAINNET_FORK_HEAVY", false)) {
-            vm.skip(true);
-            return;
-        }
-        assertEq(IPoolOracle(P_TSLA_EMPTY).liquidity(), 0, "expected an empty pool");
-        assertEq(IV3Pool(P_TSLA_EMPTY).token0(), TSLA);
-        assertEq(IV3Pool(P_TSLA_EMPTY).token1(), USDG);
-        _runEmptyPoolCase(P_TSLA_EMPTY);
+    /// Audit M003, live variant: the real TSLA/USDG 0.05% pool is canonical and
+    /// now has (thin) liquidity, but no oracle history for a 10-minute TWAP.
+    /// It can be listed, and every leg routed to it is skipped rather than
+    /// swept at an unbounded price; the other leg fills.
+    function test_M003_thinPoolWithoutOracleHistoryIsSkipped() public {
+        assertGt(IPoolOracle(P_TSLA_THIN).liquidity(), 0, "expected the thin pool to hold liquidity");
+        vm.expectRevert(bytes("OLD"));
+        sweeper.twapFloor(P_TSLA_THIN, 1 * UNIT);
+        _runEmptyPoolCase(P_TSLA_THIN);
     }
 
     function _runEmptyPoolCase(address emptyPool) internal {
@@ -519,10 +632,10 @@ contract DustMainnetForkTest is Test {
         minOuts[0] = 1; // any non-zero floor; the leg fails on the pool itself
         (minOuts[1],) = _quoteMinOut(P_NVDA, 1 * UNIT);
 
+        assertEq(nonce, sweeper.basketNonce(alice));
         vm.expectEmit(true, true, false, true, address(sweeper));
         emit DustSweeper.LegSkipped(alice, TSLA, 1 * UNIT);
-        vm.prank(keeper);
-        sweeper.sweep(alice, minOuts, nonce);
+        _sweep(alice, minOuts);
 
         assertEq(vault.tokenBalanceOf(alice, TSLA), 0, "skipped leg must not credit");
         assertGt(vault.tokenBalanceOf(alice, NVDA), 0, "healthy leg must fill");
@@ -544,8 +657,8 @@ contract DustMainnetForkTest is Test {
         vm.mockCall(REGISTRY, abi.encodeWithSelector(IRegistry.paused.selector), abi.encode(true));
         assertTrue(IStockToken(TSLA).paused(), "mock did not pause tokens");
 
-        vm.prank(keeper);
-        sweeper.sweep(alice, minOuts, nonce);
+        assertEq(nonce, sweeper.basketNonce(alice));
+        _sweep(alice, minOuts);
 
         for (uint256 i; i < 5; i++) {
             assertEq(vault.tokenBalanceOf(alice, TOKENS[i]), 0, "no leg may credit while paused");
@@ -569,24 +682,28 @@ contract DustMainnetForkTest is Test {
         uint256 nonce = _equalBasket(alice);
         _accrueViaRouter(alice, 97 * UNIT, 10); // 97 -> 100: 3 USDG accrued
         uint256[] memory minOuts = _twapMinOuts(alice, 3 * UNIT);
-        vm.prank(keeper);
-        sweeper.sweep(alice, minOuts, nonce);
+        assertEq(nonce, sweeper.basketNonce(alice));
+        _sweep(alice, minOuts);
         uint256 amzn = vault.tokenBalanceOf(alice, AMZN);
         assertGt(amzn, 0);
+        uint256 residue = vault.accruedStable(alice);
+        assertLe(residue, 2);
 
         // accrue a second round-up that will sit unswept
         _accrueViaRouter(alice, 9_500_000, 1); // 9.50 -> 10: 0.50 USDG
-        assertEq(vault.accruedStable(alice), 500_000);
+        assertEq(vault.accruedStable(alice), 500_000 + residue);
 
         sweeper.setPaused(true);
+        vm.warp(block.timestamp + sweeper.MIN_SWEEP_INTERVAL());
+        uint256 nonce2 = sweeper.basketNonce(alice);
 
         vm.prank(keeper);
         vm.expectRevert(DustSweeper.Paused.selector);
-        sweeper.sweep(alice, minOuts, nonce);
+        sweeper.sweep(alice, 1 * UNIT, new address[](5), minOuts, nonce2, 100);
 
         vm.startPrank(alice);
         vault.withdrawToken(AMZN, amzn, alice);
-        vault.withdrawAccrued(500_000, alice);
+        vault.withdrawAccrued(500_000 + residue, alice);
         vm.stopPrank();
         assertEq(IERC20(AMZN).balanceOf(alice), amzn, "in-kind withdrawal while paused");
         assertEq(vault.accruedStable(alice), 0, "stable withdrawal while paused");
@@ -822,16 +939,184 @@ contract DustMainnetForkTest is Test {
         assertEq(vault.accruedStable(alice), CAPTURE_OUT);
 
         uint256[] memory minOuts = _twapMinOuts(alice, CAPTURE_OUT);
-        vm.prank(keeper);
-        sweeper.sweep(alice, minOuts, nonce);
+        assertEq(nonce, sweeper.basketNonce(alice));
+        _sweep(alice, minOuts);
 
-        assertEq(vault.accruedStable(alice), 0, "swept");
+        assertLe(vault.accruedStable(alice), 2, "swept up to a rounding residue");
         uint256 spy = vault.tokenBalanceOf(alice, SPY);
         assertGt(spy, 0, "no SPY bought");
         assertGe(spy, minOuts[0]);
+        assertGe(spy, sweeper.twapFloor(P_SPY, _investable(CAPTURE_OUT)), "above the on-chain floor");
         assertEq(IERC20(SPY).balanceOf(address(vault)), spy);
-        assertEq(vault.costBasis(alice), CAPTURE_OUT - CAPTURE_OUT / 100, "1% fee off the top");
-        assertEq(IERC20(USDG).balanceOf(treasury), CAPTURE_OUT / 100);
+        uint256 investable = _investable(CAPTURE_OUT); // 524_752
+        assertEq(vault.costBasis(alice), investable, "fee reserved at 1% of invested");
+        assertEq(IERC20(USDG).balanceOf(treasury), (investable * 100) / 10_000);
         console2.log("0.53 USDG from wallet WETH -> SPY raw %s", spy);
+    }
+
+    // ------------------------------------------------------------------
+    // audit reproductions on live state
+    // ------------------------------------------------------------------
+
+    /// H001, exactly as the report measured it: 100,000 USDG offered to the
+    /// thin, factory-canonical TSLA/USDG 0.05% pool. The pool consumes only a
+    /// fraction. v3 refunds the rest in the same call, rounds up on what was
+    /// spent, reports the spent amount, and holds nothing afterwards.
+    function test_H001_thinPoolPartialFillIsRefunded() public {
+        uint256 amountIn = 100_000 * UNIT;
+        _fundUsdg(alice, amountIn);
+        assertGt(IPoolOracle(P_TSLA_THIN).liquidity(), 0, "thin pool must hold liquidity for this reproduction");
+        assertEq(IV3PoolMeta(P_TSLA_THIN).factory(), FACTORY);
+        assertEq(IV3Factory(FACTORY).getPool(TSLA, USDG, 500), P_TSLA_THIN, "canonical");
+
+        // what the canonical quoter says this exact-input swap yields (it also stops where liquidity ends)
+        (uint256 quoted,,,) = IQuoterV2(QUOTER_V2).quoteExactInputSingle(
+            IQuoterV2.QuoteExactInputSingleParams({
+                tokenIn: USDG, tokenOut: TSLA, amountIn: amountIn, fee: 500, sqrtPriceLimitX96: 0
+            })
+        );
+
+        vm.startPrank(alice);
+        IERC20(USDG).approve(address(router), type(uint256).max);
+        vm.recordLogs();
+        (uint256 out, uint256 roundUp) = router.swapWithRoundUp(P_TSLA_THIN, TSLA, amountIn, 1, 1, 1);
+        vm.stopPrank();
+
+        uint256 spent = amountIn - IERC20(USDG).balanceOf(alice) - roundUp;
+        console2.log("offered %s, pool consumed %s (%s bps)", amountIn, spent, (spent * 10_000) / amountIn);
+        console2.log("TSLA out %s, refund %s, round-up %s", out, amountIn - spent, roundUp);
+        assertLt(spent, amountIn, "the thin pool fills only part of the offer");
+        assertGt(spent, 0);
+        assertEq(IERC20(USDG).balanceOf(address(router)), 0, "router must hold nothing after a partial fill");
+        assertEq(IERC20(USDG).balanceOf(alice), amountIn - spent - roundUp, "unspent stable refunded in the same call");
+        assertEq(IERC20(TSLA).balanceOf(alice), out, "tokens measured at the user");
+        assertEq(out, quoted, "fill matches the canonical quoter for the partial");
+        assertEq(roundUp, router.roundUpAmount(spent, 1, 1), "round-up computed on the spent amount");
+        assertEq(vault.accruedStable(alice), roundUp);
+
+        // the event reports what was spent, not what was offered
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        bytes32 sig = keccak256("SwapWithRoundUp(address,address,uint256,uint256,uint256)");
+        bool found;
+        for (uint256 i; i < logs.length; i++) {
+            if (logs[i].emitter == address(router) && logs[i].topics[0] == sig) {
+                (uint256 stableIn, uint256 tokensOut, uint256 ru) = abi.decode(logs[i].data, (uint256, uint256, uint256));
+                assertEq(stableIn, spent);
+                assertEq(tokensOut, out);
+                assertEq(ru, roundUp);
+                found = true;
+            }
+        }
+        assertTrue(found, "SwapWithRoundUp not emitted");
+    }
+
+    /// H001, the drain half: a pool that pairs TSLA/USDG at fee 500 but is not
+    /// the factory's pool is refused; and even if the factory were to vouch for
+    /// a hostile pool, the callback cannot pull more than the caller committed.
+    function test_H001_hostilePoolRefusedAndCallbackBounded() public {
+        MockSwapPool hostile = new MockSwapPool(TSLA, USDG, 0); // right pairing, fee 3000 -> 500 below
+        hostile.setFee(500);
+        hostile.setFactory(FACTORY);
+        _fundUsdg(alice, 10 * UNIT);
+        _fundUsdg(address(router), 1_000 * UNIT); // hypothetical stranded pot
+        vm.startPrank(alice);
+        IERC20(USDG).approve(address(router), type(uint256).max);
+        vm.expectRevert(DustRouter.BadPool.selector);
+        router.swapWithRoundUp(address(hostile), TSLA, 1 * UNIT, 1, 1, 1);
+
+        // factory compromised (mocked): the hostile pool asks for 501 against a 1 commitment
+        vm.mockCall(FACTORY, abi.encodeCall(IV3Factory.getPool, (TSLA, USDG, 500)), abi.encode(address(hostile)));
+        hostile.setOvercharge(500 * UNIT);
+        hostile.setOutBps(0);
+        vm.expectRevert(DustRouter.OverCommitted.selector);
+        router.swapWithRoundUp(address(hostile), TSLA, 1 * UNIT, 1, 1, 1);
+        vm.stopPrank();
+        vm.clearMockedCalls();
+        assertEq(IERC20(USDG).balanceOf(address(router)), 1_000 * UNIT, "the pot cannot be pulled through the callback");
+        assertEq(IERC20(USDG).balanceOf(alice), 10 * UNIT);
+    }
+
+    /// M003 on a live pool: a large buy (2M USDG, enough to walk through the
+    /// pool's TSLA liquidity at any recent depth) pushes the TSLA/USDG 0.3% spot
+    /// far above its 10-minute TWAP. A keeper sweep with minOut = 1 is bounded
+    /// by the on-chain floor: the leg is skipped and the user's stable returned.
+    function test_M003_priceMovedBelowTwapFloor_legSkipped() public {
+        _fundUsdg(alice, 100 * UNIT);
+        uint256 nonce = _singleBasket(alice, TSLA);
+        _accrueViaRouter(alice, 90 * UNIT, 100); // 10 USDG accrued
+        uint256 legIn = _investable(10 * UNIT);
+        uint256 floor = sweeper.twapFloor(P_TSLA, legIn);
+
+        // move the market: buy TSLA with a lot of USDG
+        (, int24 tickBefore,,,,,) = IPoolOracle(P_TSLA).slot0();
+        PoolSwapper whale = new PoolSwapper();
+        uint256 whaleIn = 2_000_000 * UNIT;
+        _fundUsdg(address(whale), whaleIn);
+        (int256 tslaDelta, int256 usdgDelta) = whale.buy(P_TSLA, USDG, whaleIn);
+        (, int24 tickAfter,,,,,) = IPoolOracle(P_TSLA).slot0();
+        console2.log("whale: USDG consumed %s of %s, TSLA bought %s", uint256(usdgDelta), whaleIn, uint256(-tslaDelta));
+        console2.log("pool tick %s -> %s", vm.toString(int256(tickBefore)), vm.toString(int256(tickAfter)));
+        console2.log("pool liquidity now %s", uint256(IPoolOracle(P_TSLA).liquidity()));
+        (uint256 quotedNow,,,) = IQuoterV2(QUOTER_V2).quoteExactInputSingle(
+            IQuoterV2.QuoteExactInputSingleParams({
+                tokenIn: USDG, tokenOut: TSLA, amountIn: legIn, fee: 3000, sqrtPriceLimitX96: 0
+            })
+        );
+        console2.log("after the whale: %s USDG buys %s TSLA, on-chain floor %s", legIn, quotedNow, floor);
+        assertLt(quotedNow, floor, "the move must take spot below the TWAP floor for this test to mean anything");
+
+        uint256[] memory minOuts = new uint256[](1);
+        minOuts[0] = 1; // a keeper floor of one wei
+        assertEq(nonce, sweeper.basketNonce(alice));
+        vm.expectEmit(true, true, false, true, address(sweeper));
+        emit DustSweeper.LegSkipped(alice, TSLA, legIn);
+        _sweep(alice, minOuts);
+        assertEq(vault.tokenBalanceOf(alice, TSLA), 0, "nothing bought below the floor");
+        assertEq(vault.accruedStable(alice), 10 * UNIT, "everything returned, no fee");
+        assertEq(IERC20(USDG).balanceOf(treasury), 0);
+        assertEq(IERC20(USDG).balanceOf(address(sweeper)), 0);
+    }
+
+    /// M003 on live state: clearBasket stops the keeper.
+    function test_M003_clearBasketStopsKeeper() public {
+        _fundUsdg(alice, 100 * UNIT);
+        _singleBasket(alice, TSLA);
+        _accrueViaRouter(alice, 90 * UNIT, 100);
+        vm.prank(alice);
+        sweeper.clearBasket();
+        assertEq(sweeper.basketLengthOf(alice), 0);
+        uint256[] memory minOuts = new uint256[](0);
+        uint256 nonce = sweeper.basketNonce(alice);
+        vm.prank(keeper);
+        vm.expectRevert(DustSweeper.NoBasket.selector);
+        sweeper.sweep(alice, 10 * UNIT, new address[](0), minOuts, nonce, 100);
+        vm.prank(alice);
+        vault.withdrawAccrued(10 * UNIT, alice);
+        assertEq(IERC20(USDG).balanceOf(alice), 10 * UNIT, "100 funded - 90 spent - 10 round-up + 10 withdrawn");
+    }
+
+    /// L001 on real USDG: the issuer freezes the treasury (every transfer to it
+    /// reverts). The sweep still settles, the fee is waived for that sweep and
+    /// returned to the user.
+    function test_L001_frozenTreasuryDoesNotBrickSweep() public {
+        _fundUsdg(alice, 100 * UNIT);
+        uint256 nonce = _singleBasket(alice, SPY);
+        _accrueViaRouter(alice, 90 * UNIT, 100); // 10 USDG
+        uint256 investable = _investable(10 * UNIT);
+        uint256 fee = (investable * sweeper.feeBps()) / 10_000;
+        uint256[] memory minOuts = _twapMinOuts(alice, 10 * UNIT);
+
+        vm.mockCallRevert(USDG, abi.encodeWithSelector(IERC20.transfer.selector, treasury), "frozen");
+        assertEq(nonce, sweeper.basketNonce(alice));
+        vm.expectEmit(true, false, false, true, address(sweeper));
+        emit DustSweeper.FeeSkipped(alice, fee);
+        _sweep(alice, minOuts);
+        vm.clearMockedCalls();
+
+        assertGt(vault.tokenBalanceOf(alice, SPY), 0, "the buy settled");
+        assertEq(IERC20(USDG).balanceOf(treasury), 0);
+        assertEq(vault.costBasis(alice), investable);
+        assertEq(vault.accruedStable(alice), 10 * UNIT - investable, "the waived fee came back to the user");
+        assertEq(IERC20(USDG).balanceOf(address(sweeper)), 0);
     }
 }

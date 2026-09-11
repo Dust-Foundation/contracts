@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: BUSL-1.1
-pragma solidity ^0.8.24;
+pragma solidity 0.8.35;
 
 import {Test} from "forge-std/Test.sol";
 import {DustVault} from "../src/DustVault.sol";
 import {DustCapture, IKeeperSource} from "../src/DustCapture.sol";
-import {IERC20, IWETH, IV3Pool, IDustVault} from "../src/interfaces/IDust.sol";
+import {IERC20, IWETH, IV3Pool, IV3Factory, IDustVault} from "../src/interfaces/IDust.sol";
 import {TickMath} from "../src/libraries/TickMath.sol";
 import {FullMath} from "../src/libraries/FullMath.sol";
-import {MockStable, MockWETH, MockSweeper, MockV3Pool} from "./mocks/CaptureMocks.sol";
+import {MockStable, MockWETH, MockSweeper, MockV3Pool, MockFactory} from "./mocks/CaptureMocks.sol";
 
 /// A recipient that refuses plain ETH, to exercise withdrawEth's failure path.
 contract RejectsEth {
@@ -20,6 +20,7 @@ contract DustCaptureTest is Test {
     MockStable stable;
     MockWETH weth;
     MockV3Pool pool;
+    MockFactory factory;
     DustVault vault;
     MockSweeper sweeper;
     DustCapture capture;
@@ -39,12 +40,15 @@ contract DustCaptureTest is Test {
         pool = new MockV3Pool(address(weth), address(stable), TICK); // token0 = WETH, as on mainnet
         vault = new DustVault(IERC20(address(stable)));
         sweeper = new MockSweeper(keeper);
+        factory = new MockFactory();
+        factory.register(address(pool));
         capture = new DustCapture(
             IERC20(address(stable)),
             IDustVault(address(vault)),
             IKeeperSource(address(sweeper)),
             IWETH(address(weth)),
-            IV3Pool(address(pool))
+            IV3Pool(address(pool)),
+            IV3Factory(address(factory))
         );
         // router slot is a dummy here; capture is the module under test
         vault.setModules(makeAddr("router"), address(sweeper), address(capture));
@@ -97,8 +101,37 @@ contract DustCaptureTest is Test {
             IDustVault(address(vault)),
             IKeeperSource(address(sweeper)),
             IWETH(address(weth)),
-            IV3Pool(address(bad))
+            IV3Pool(address(bad)),
+            IV3Factory(address(factory))
         );
+    }
+
+    /// Audit L004: provenance travels with the contract. A pool with the right
+    /// pairing that the factory does not resolve for (WETH, stable, fee) is
+    /// refused by the constructor.
+    function test_constructorRejectsNonCanonicalPool() public {
+        MockV3Pool lookalike = new MockV3Pool(address(weth), address(stable), TICK); // never registered
+        vm.expectRevert(DustCapture.BadPool.selector);
+        new DustCapture(
+            IERC20(address(stable)),
+            IDustVault(address(vault)),
+            IKeeperSource(address(sweeper)),
+            IWETH(address(weth)),
+            IV3Pool(address(lookalike)),
+            IV3Factory(address(factory))
+        );
+        // same pair, different fee tier: the factory knows a different pool for it
+        lookalike.setFee(500);
+        vm.expectRevert(DustCapture.BadPool.selector);
+        new DustCapture(
+            IERC20(address(stable)),
+            IDustVault(address(vault)),
+            IKeeperSource(address(sweeper)),
+            IWETH(address(weth)),
+            IV3Pool(address(lookalike)),
+            IV3Factory(address(factory))
+        );
+        assertEq(address(capture.factory()), address(factory));
     }
 
     // ------------------------------------------------------------------
@@ -511,12 +544,14 @@ contract DustCaptureTest is Test {
     function test_reversedPoolOrdering() public {
         // price token1/token0 = WETH per stable = 4e8 raw -> tick about +198080
         MockV3Pool rpool = new MockV3Pool(address(stable), address(weth), -TICK);
+        factory.register(address(rpool));
         DustCapture rcap = new DustCapture(
             IERC20(address(stable)),
             IDustVault(address(vault)),
             IKeeperSource(address(sweeper)),
             IWETH(address(weth)),
-            IV3Pool(address(rpool))
+            IV3Pool(address(rpool)),
+            IV3Factory(address(factory))
         );
         assertFalse(rcap.wethIsToken0());
         DustVault rvault = new DustVault(IERC20(address(stable)));
@@ -526,7 +561,8 @@ contract DustCaptureTest is Test {
             IDustVault(address(rvault)),
             IKeeperSource(address(sweeper)),
             IWETH(address(weth)),
-            IV3Pool(address(rpool))
+            IV3Pool(address(rpool)),
+            IV3Factory(address(factory))
         );
         rvault.setModules(makeAddr("router"), address(sweeper), address(rcap));
         stable.mint(address(rpool), 1_000 * UNIT);

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: BUSL-1.1
-pragma solidity ^0.8.24;
+pragma solidity 0.8.35;
 
 interface IERC20 {
     function transfer(address to, uint256 amount) external returns (bool);
@@ -54,6 +54,20 @@ interface IV3Pool {
 
     /// Permissionless: grows the oracle buffer. Anyone may pay for it.
     function increaseObservationCardinalityNext(uint16 observationCardinalityNext) external;
+}
+
+/// Pool provenance surface: the immutables every Uniswap v3 pool (and the
+/// Synthra fork) exposes. Used together with IV3Factory.getPool to accept only
+/// pools the canonical factory acknowledges (audit H001, L002, L004).
+interface IV3PoolMeta {
+    function fee() external view returns (uint24);
+    function factory() external view returns (address);
+}
+
+/// Uniswap v3 factory lookup. Symmetric in token order; returns address(0)
+/// for a pair/fee that was never created.
+interface IV3Factory {
+    function getPool(address tokenA, address tokenB, uint24 fee) external view returns (address);
 }
 
 interface IDustVault {

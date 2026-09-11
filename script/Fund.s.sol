@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: BUSL-1.1
-pragma solidity ^0.8.24;
+pragma solidity 0.8.35;
 
 import {Script, console2} from "forge-std/Script.sol";
 import {IERC20, IV3Pool} from "../src/interfaces/IDust.sol";

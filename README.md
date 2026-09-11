@@ -4,7 +4,7 @@ Solidity + Foundry. Four contracts, no upgradeability, no admin power over user 
 
 - `src/DustVault.sol` custody and per-user ledger (accrued stable, Stock Token balances, cost basis). Withdrawals always work.
 - `src/DustRouter.sol` stable -> Stock Token swap with the round-up captured in the same transaction.
-- `src/DustSweeper.sol` owner-curated menu of (Stock Token, USDG pool) pairs; each user composes their own basket; the keeper sweeps accrued round-ups into it with caller-supplied per-leg minOuts. Failing legs are skipped, never fatal.
+- `src/DustSweeper.sol` owner-curated menu of (Stock Token, canonical USDG pool) pairs; each user composes their own basket and can clear it at any time; the keeper sweeps accrued round-ups into it against a pinned quote (amount, pools, fee, nonce), with every leg floored at the pool's own 10-minute TWAP less 3%, at most once per user per 5 minutes. Failing legs are skipped, never fatal. Fee is charged on the stable actually invested.
 - `src/DustCapture.sol` opt-in, user-capped pulls for round-ups observed outside the app.
 
 The single source of truth for every mainnet address is `MAINNET-ADDRESSES.md`. Do not guess addresses.
@@ -33,7 +33,7 @@ Fork suites fork their endpoint themselves (`vm.createSelectFork`). If an RPC is
 
 The public mainnet node is not an archive node: measured on 2026-09-03 it only serves state for roughly the latest 6k to 10k blocks (10 to 17 minutes), so a hard-coded pin goes stale within minutes. By default the mainnet suite forks the head, pins 100 blocks behind it, and logs the block; `setUp` runs once per suite, so all tests in a run share that block. For an exactly reproducible replay set `MAINNET_FORK_BLOCK=<n>` against an archive provider. Fork state is cached locally per block, so reruns at the same block barely touch the RPC.
 
-`test/DustMainnetFork.t.sol` deploys the four contracts into a mainnet fork against real USDG and the five launch pools (TSLA, NVDA, AAPL, AMZN, SPY) and runs the full loop: menu, basket, round-up, keeper sweep with TWAP-derived minOuts (same math as `keeper/quote.mjs`), in-kind withdrawal, plus empty-pool and issuer-pause leg skipping and withdrawals while paused. One extra test runs the empty-pool case against the real dead TSLA/USDG 0.05% pool; it needs ~700 storage reads and is skipped unless `MAINNET_FORK_HEAVY=1` (use a paid RPC for it).
+`test/DustMainnetFork.t.sol` deploys the four contracts into a mainnet fork against real USDG, the canonical Uniswap v3 factory and the five launch pools (TSLA, NVDA, AAPL, AMZN, SPY) and runs the full loop: menu, basket, round-up, keeper sweep with TWAP-derived minOuts (same math as `keeper/quote.mjs`), in-kind withdrawal, plus empty-pool and issuer-pause leg skipping and withdrawals while paused. It also reproduces the September 2026 audit findings on live state: the router partial fill against the thin TSLA/USDG 0.05% pool (H001), the TWAP floor after a large price move and a pool without oracle history (M003), a frozen treasury on real USDG (L001), and lists all fifteen menu pools through the factory check. `test/DustAuditV3.t.sol` holds the mock-based reproduction of every finding. Pin `MAINNET_FORK_BLOCK` within the last few thousand blocks; for a deterministic replay pass an archive provider with `--fork-url` from your shell environment.
 
 ## Deploy
 
@@ -50,7 +50,7 @@ Mainnet environment variables (all optional; defaults are the verified values in
 | var | meaning | default |
 |---|---|---|
 | `STABLE` | stable token | USDG `0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168` |
-| `TREASURY` | fee recipient | `0x0` (fee disabled until the owner calls `setTreasury`) |
+| `TREASURY` | fee recipient | `0x0` (until the owner calls `setTreasury` the fee reserve is returned to the user each sweep; leg sizes are unaffected) |
 | `KEEPER` | sweep and capture keeper | deployer |
 | `OWNER` | final `DustSweeper` owner, the multisig | deployer, with a loud warning |
 | `FEE_BPS` | sweep fee, max 500 | `100` |
