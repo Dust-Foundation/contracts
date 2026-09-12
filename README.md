@@ -9,6 +9,15 @@ Solidity + Foundry. Four contracts, no upgradeability, no admin power over user 
 
 The single source of truth for every mainnet address is `MAINNET-ADDRESSES.md`. Do not guess addresses.
 
+## Audit
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="audit/credshields-white.svg">
+  <img alt="CredShields" src="audit/credshields-black.svg" height="48">
+</picture>
+
+The v2 contracts (tag `audit-2026-09`) were audited by [CredShields](https://credshields.com) in September 2026: 12 findings, none critical, 1 high. Every finding was addressed in v3 (tag `audit-2026-09-v3`, live on mainnet since 2026-09-11), each with a test that replays the auditor's scenario, and CredShields re-reviewed and marked all 12 fixed on 2026-09-12. Full report: [Audit_Report_Dust.pdf](https://github.com/Credshields/audit-reports/blob/master/Audit_Report_Dust.pdf). Finding-by-finding responses are in `AUDIT-SCOPE.md`.
+
 ## Networks
 
 | | chain id | stable | DEX callback |
