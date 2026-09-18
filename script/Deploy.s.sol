@@ -51,6 +51,18 @@ import {IERC20, IWETH, IV3Pool, IV3PoolMeta, IV3Factory, IDustVault} from "../sr
 contract Deploy is Script {
     uint256 constant ROBINHOOD_MAINNET = 4663;
     uint256 constant ROBINHOOD_TESTNET = 46630;
+    uint256 constant ARC_MAINNET = 5042;
+
+    // ---- Arc mainnet (5042): USDC is the stable AND the gas token. Verified
+    // on-chain 2026-09-17 (see ARC-ADDRESSES.md). Only the USDC capture path is
+    // live there: the WETH/USDC pool is empty, so the WETH and ETH-float paths
+    // fail closed and the keeper never uses them. Same audited bytecode.
+    address constant A_USDC = 0x3600000000000000000000000000000000000000; // 6 decimals as ERC-20, 18 as native
+    address constant A_CIRBTC = 0x171A4217b86A807A64eB94757Db6849fb4bDbAA0; // Circle Bitcoin, 8 decimals
+    address constant AP_CIRBTC = 0x82916bee18fCEF517B26C72d7Cb5F13694E1dB41; // cirBTC/USDC 0.01%, deep, cardinality 600
+    address constant A_WETH = 0x128cC466B61f542da60c70e3aA11c10e19B84EDB; // bridged WETH, 18 decimals
+    address constant A_WETH_POOL = 0xE17939B09faf35CA3aDE4ab040dB955945134874; // WETH/USDC 0.05%, empty (deliberate: ETH paths fail closed)
+    address constant A_UNI_V3_FACTORY = 0xf0db7b58379503491d857dB50AC9ece64c653918; // Uniswap-v3-style factory on 5042
 
     // ---- testnet (46630): 18-dec test USDC + Synthra-fork pools ----
     address constant T_USDC = 0xbf4479C07Dc6fdc6dAa764A0ccA06969e894275F;
@@ -112,6 +124,12 @@ contract Deploy is Script {
 
     function run() external {
         string memory net = vm.envOr("DEPLOY_NETWORK", string(""));
+        if (_eq(net, "arc") || (bytes(net).length == 0 && block.chainid == ARC_MAINNET)) {
+            console2.log("chain id: %s", block.chainid);
+            console2.log("path:     ARC");
+            _deployArc();
+            return;
+        }
         bool mainnet;
         if (bytes(net).length == 0) {
             mainnet = block.chainid == ROBINHOOD_MAINNET;
@@ -272,6 +290,90 @@ contract Deploy is Script {
         pools = vm.envOr("MENU_POOLS", ",", defPools);
         require(tokens.length > 0, "Deploy: empty menu");
         require(tokens.length == pools.length, "Deploy: MENU_TOKENS/MENU_POOLS length mismatch");
+    }
+
+    // Arc mainnet (5042): identical bytecode, USDC stable, cirBTC menu
+    // ------------------------------------------------------------------
+    function _deployArc() internal {
+        require(block.chainid == ARC_MAINNET, "Deploy: arc path requires chain id 5042");
+
+        address deployer = msg.sender;
+        address stable = vm.envOr("STABLE", A_USDC);
+        address treasury = vm.envOr("TREASURY", address(0));
+        address keeper = vm.envOr("KEEPER", deployer);
+        address finalOwner = vm.envOr("OWNER", deployer);
+        uint256 feeBps = vm.envOr("FEE_BPS", uint256(100));
+        address wethAddr = vm.envOr("WETH", A_WETH);
+        address ethPool = vm.envOr("ETH_POOL", A_WETH_POOL);
+        address factory = vm.envOr("FACTORY", A_UNI_V3_FACTORY);
+        address[] memory defTokens = new address[](1);
+        address[] memory defPools = new address[](1);
+        defTokens[0] = A_CIRBTC;
+        defPools[0] = AP_CIRBTC;
+        address[] memory tokens = vm.envOr("MENU_TOKENS", ",", defTokens);
+        address[] memory pools = vm.envOr("MENU_POOLS", ",", defPools);
+        require(tokens.length == pools.length && tokens.length > 0, "Deploy: MENU_TOKENS / MENU_POOLS length mismatch");
+
+        console2.log("deployer:   %s", deployer);
+        console2.log("STABLE:     %s (USDC, also the gas token)", stable);
+        console2.log("TREASURY:   %s", treasury);
+        console2.log("KEEPER:     %s", keeper);
+        console2.log("OWNER:      %s", finalOwner);
+        console2.log("FEE_BPS:    %s", feeBps);
+        console2.log("WETH:       %s (ETH paths fail closed on Arc)", wethAddr);
+        console2.log("ETH_POOL:   %s", ethPool);
+        console2.log("FACTORY:    %s", factory);
+        for (uint256 i; i < tokens.length; i++) {
+            console2.log("menu[%s] token %s pool %s", i, tokens[i], pools[i]);
+        }
+
+        // ---- pre-flight (read-only) ----
+        require(stable.code.length > 0, "Deploy: STABLE has no code");
+        uint8 dec = IERC20(stable).decimals();
+        require(dec == 6, "Deploy: Arc USDC must report 6 decimals");
+        uint256 unit = 10 ** uint256(dec);
+        require(feeBps <= 500, "Deploy: FEE_BPS above the 5% code ceiling");
+        require(keeper != address(0), "Deploy: KEEPER is zero");
+        require(finalOwner != address(0), "Deploy: OWNER is zero");
+        require(factory.code.length > 0, "Deploy: FACTORY has no code");
+        for (uint256 i; i < tokens.length; i++) {
+            require(tokens[i].code.length > 0, "Deploy: menu token has no code");
+            require(pools[i].code.length > 0, "Deploy: menu pool has no code");
+            address t0 = IV3Pool(pools[i]).token0();
+            address t1 = IV3Pool(pools[i]).token1();
+            bool ok = (t0 == stable && t1 == tokens[i]) || (t1 == stable && t0 == tokens[i]);
+            require(ok, "Deploy: pool does not pair STABLE with its menu token");
+            (,,, uint16 card,,,) = IV3Pool(pools[i]).slot0();
+            require(card >= MIN_ORACLE_CARDINALITY, "Deploy: menu pool lacks oracle history for the TWAP floor");
+            _checkFactoryPool(factory, pools[i], tokens[i], stable);
+        }
+        _checkEthPool(stable, wethAddr, ethPool);
+        _checkFactoryPool(factory, ethPool, wethAddr, stable);
+        // gas is USDC: the deployer needs a native balance, not ETH
+        console2.log("deployer native USDC (18-dec wei): %s", deployer.balance);
+        require(deployer.balance > 0, "Deploy: deployer holds no USDC on Arc for gas");
+
+        if (treasury == address(0)) {
+            console2.log("WARNING: TREASURY unset -> sweep fee is DISABLED until owner calls setTreasury");
+        }
+        if (finalOwner == deployer) {
+            console2.log("WARNING: OWNER unset -> the deployer keeps DustSweeper ownership.");
+        }
+
+        // ---- deploy ----
+        vm.startBroadcast();
+        Deployed memory d = _deployCore(stable, unit, treasury, tokens, pools, wethAddr, ethPool, factory);
+        // no _ensureOracle: the WETH pool is unused on Arc, no reason to pay for its buffer
+        if (keeper != deployer) d.sweeper.setKeeper(keeper);
+        if (feeBps != 100) d.sweeper.setFeeBps(uint16(feeBps));
+        if (finalOwner != deployer) d.sweeper.transferOwnership(finalOwner);
+        vm.stopBroadcast();
+
+        _printAddresses(d, stable, unit, wethAddr, ethPool);
+        console2.log("DUST_KEEPER=%s", d.sweeper.keeper());
+        console2.log("DUST_TREASURY=%s", d.sweeper.treasury());
+        console2.log("DUST_FEE_BPS=%s", d.sweeper.feeBps());
+        console2.log("ARC: run the keeper with DUST_CAPTURE_SOURCES=usdc (USDC only)");
     }
 
     /// Shared deploy + wiring. Caller wraps in start/stopBroadcast.

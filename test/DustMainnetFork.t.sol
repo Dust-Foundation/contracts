@@ -458,8 +458,13 @@ contract DustMainnetForkTest is Test {
         assertEq(fresh.menuLength(), 15);
         // the thin 0.05% TSLA pool is canonical too, but has no oracle history: it can be
         // listed and every leg on it is skipped (see test_M003_thinPoolWithoutOracleHistoryIsSkipped)
-        vm.expectRevert(bytes("OLD"));
-        fresh.twapFloor(P_TSLA_THIN, 1 * UNIT);
+        (,,, uint16 thinCard,,,) = IPoolOracle(P_TSLA_THIN).slot0();
+        if (thinCard <= 1) {
+            vm.expectRevert(bytes("OLD"));
+            fresh.twapFloor(P_TSLA_THIN, 1 * UNIT);
+        } else {
+            assertGt(fresh.twapFloor(P_TSLA_THIN, 1 * UNIT), 0, "thin pool gained oracle history; floor is defined");
+        }
     }
 
     /// Guards the copied TickMath against every live pool's spot: sqrt(tick) <= slot0.sqrtPrice < sqrt(tick + 1).
@@ -604,8 +609,20 @@ contract DustMainnetForkTest is Test {
     /// swept at an unbounded price; the other leg fills.
     function test_M003_thinPoolWithoutOracleHistoryIsSkipped() public {
         assertGt(IPoolOracle(P_TSLA_THIN).liquidity(), 0, "expected the thin pool to hold liquidity");
-        vm.expectRevert(bytes("OLD"));
-        sweeper.twapFloor(P_TSLA_THIN, 1 * UNIT);
+        // Live precondition: the pool has never had its oracle buffer grown. Someone
+        // extended it in Sept 2026 (cardinality 1 -> 8), so the "OLD" revert is only
+        // asserted while the buffer is still at 1; the skip behaviour itself is
+        // covered deterministically by the stub case below either way.
+        (,,, uint16 card,,,) = IPoolOracle(P_TSLA_THIN).slot0();
+        if (card <= 1) {
+            vm.expectRevert(bytes("OLD"));
+            sweeper.twapFloor(P_TSLA_THIN, 1 * UNIT);
+        } else {
+            // with history the pool serves a floor and the leg fills; the M003 skip
+            // path is exercised by test_emptyPoolLegIsSkippedNotFatal on a stub
+            console2.log("thin TSLA pool now has oracle cardinality %s; OLD path not reproducible on live state", card);
+            return;
+        }
         _runEmptyPoolCase(P_TSLA_THIN);
     }
 
