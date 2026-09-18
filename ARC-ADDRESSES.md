@@ -88,3 +88,10 @@ Same bytecode as Robinhood Chain v3 (tag `audit-2026-09-v3`). Deploy blocks
   at deploy).
 - `NEXT_PUBLIC_ARC_DEPLOY_BLOCK=21416559`
 - Ownership stays with the deployer until the multisig move (same as Robinhood).
+- Address collision, by design of CREATE: the deployer's first four deploys on
+  Arc landed on the same addresses as its first four on Robinhood Chain, which
+  are the DEPRECATED v1 set there (see MAINNET-ADDRESSES.md). So
+  `0xa14a...0492` is the live Arc sweeper AND the retired Robinhood v1
+  sweeper. A wallet on the wrong network can therefore send a transaction
+  that reaches a real, wrong contract instead of failing; the app gates every
+  screen on the wallet's actual chain (v0.8.1) for this reason.
