@@ -67,16 +67,24 @@ Then record the printed `DUST_*` addresses below, set them as Fly secrets on
 `dust-keeper-arc` (see `keeper/fly.arc.toml`) and as `NEXT_PUBLIC_ARC_DUST_*`
 on Vercel.
 
-## Dust contracts (Arc)
+## Dust contracts (Arc) — LIVE, deployed 2026-09-18
 
-Not deployed yet. Fill in from the deploy log:
+Same bytecode as Robinhood Chain v3 (tag `audit-2026-09-v3`). Deploy blocks
+21416559 to 21416560, deployer / interim owner / treasury
+`0xc1a4b14232d1deFeAf2D0C018a504dDeb0ab5d2b`. Tx hashes in
+`broadcast/Deploy.s.sol/5042/run-latest.json`.
 
 | contract | address |
 |---|---|
-| DustVault | |
-| DustRouter | |
-| DustSweeper | |
-| DustCapture | |
+| DustVault | `0x572557F8f96cbd1DB0560fE36bFdD674bC28493F` |
+| DustRouter | `0x3E83593D9D3f0F29410209070688AD2eA38b0d16` |
+| DustSweeper | `0xa14a1fC162b5B54402ec234EAE884258E4940492` |
+| DustCapture | `0x7dFC4707017967b30c93D4dB69FA928852e7E825` |
 
-- Deploy block: (set `NEXT_PUBLIC_ARC_DEPLOY_BLOCK`)
-- Menu: cirBTC via the pool above. Fee 100 bps.
+- Keeper: `0x2A08Fb9EFdc0cD8eC6384107F3eA0A97454abFdD` (same key as Robinhood Chain)
+- Fee: 100 bps. Menu: cirBTC via `0x82916bee18fCEF517B26C72d7Cb5F13694E1dB41`.
+- Verified after deploy: vault modules wired, keeper set, `poolFor(cirBTC)`
+  resolves, `twapFloor` on the cirBTC pool answers (126,784 sats per 100 USDC
+  at deploy).
+- `NEXT_PUBLIC_ARC_DEPLOY_BLOCK=21416559`
+- Ownership stays with the deployer until the multisig move (same as Robinhood).

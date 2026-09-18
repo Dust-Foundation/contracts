@@ -10,4 +10,4 @@ solc = "0.8.35"
 [rpc_endpoints]
 robinhood_testnet = "https://rpc.testnet.chain.robinhood.com"
 robinhood_mainnet = "https://rpc.mainnet.chain.robinhood.com"
-arc_mainnet = "https://arc.drpc.org"
+arc_mainnet = "https://rpc.mainnet.arc.io"
