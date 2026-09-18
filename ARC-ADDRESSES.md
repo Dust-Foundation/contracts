@@ -9,8 +9,11 @@ Verified on-chain 2026-09-17 against `https://rpc.mainnet.arc.io` and
   Transfers route through a system contract at `0x1800...0000` and a protocol
   blocklist at `0x1800...0001`; `test/arc/ArcNativeMock.sol` stands in for
   both inside a Foundry fork.
-- A native USDC payment emits one ordinary USDC `Transfer` log, so the
-  keeper's outside-spend detection is unchanged.
+- Every USDC movement, plain wallet sends included, is logged by the EIP-7708
+  system emitter `0xfffffffffffffffffffffffffffffffffffffffe` as a `Transfer`
+  in 18-decimal wei. The USDC contract at `0x3600...0000` logs only
+  contract-driven moves (6 decimals), a subset of the same movements. The
+  keeper reads the emitter alone on Arc.
 - Base fee floor 20 gwei (transactions under it may never be mined), cap
   20,000 gwei. `eth_getLogs` serves about 2,000 blocks per call.
 - No tokenized stocks exist on Arc yet (2026-09-17). USYC is Teller-minted,
