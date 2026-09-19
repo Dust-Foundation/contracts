@@ -97,17 +97,25 @@ The script deploys the adapter first (or reuses `FACTORY` if set), checks it
 resolves every menu pool and the WETH pool, then deploys the four core
 contracts, lists the menu and sets the keeper.
 
-## Dust contracts (Base)
+## Dust contracts (Base) — LIVE, deployed 2026-09-19
 
-Not deployed yet. Fill in from the deploy log:
+Block 51527574, 12 transactions, deployer / interim owner / treasury
+`0xc1a4b14232d1deFeAf2D0C018a504dDeb0ab5d2b`. Tx hashes in
+`broadcast/Deploy.s.sol/8453/run-latest.json`.
 
 | contract | address |
 |---|---|
-| SlipstreamFactoryAdapter | |
-| DustVault | |
-| DustRouter | |
-| DustSweeper | |
-| DustCapture | |
+| SlipstreamFactoryAdapter | `0x572557F8f96cbd1DB0560fE36bFdD674bC28493F` |
+| DustVault | `0x3E83593D9D3f0F29410209070688AD2eA38b0d16` |
+| DustRouter | `0xa14a1fC162b5B54402ec234EAE884258E4940492` |
+| DustSweeper | `0x2DAfa662dF120D505d2D6aDa6f934584C012e2eD` |
+| DustCapture | `0x9DacF353fFa758EE8f2bE682b53fEe75a94e05F1` |
 
-- Deploy block: (set `NEXT_PUBLIC_BASE_DEPLOY_BLOCK`)
-- Fee 100 bps. Keeper: same key as the other chains unless rotated.
+- Keeper: `0x2A08Fb9EFdc0cD8eC6384107F3eA0A97454abFdD` (same key as the other chains)
+- Fee 100 bps. Menu: NVDAc, AAPLc, METAc, GOOGLc, AERO via the pools above.
+- `NEXT_PUBLIC_BASE_DEPLOY_BLOCK=51527574`
+- Address collision by CREATE, as on Arc: the deployer's nonces 0..3 here
+  produced the same addresses as Arc's adapter-less set, so the Base
+  ADAPTER is Arc's vault address, the Base VAULT is Arc's router, and the Base
+  ROUTER is Arc's sweeper (and Robinhood's retired v1 sweeper). The app gates
+  every screen on the wallet's actual chain; never rely on an address alone.
