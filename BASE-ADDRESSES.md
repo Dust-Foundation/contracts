@@ -108,8 +108,8 @@ Block 51527574, 12 transactions, deployer / interim owner / treasury
 | SlipstreamFactoryAdapter | `0x572557F8f96cbd1DB0560fE36bFdD674bC28493F` |
 | DustVault | `0x3E83593D9D3f0F29410209070688AD2eA38b0d16` |
 | DustRouter | `0xa14a1fC162b5B54402ec234EAE884258E4940492` |
-| DustSweeper | `0x2DAfa662dF120D505d2D6aDa6f934584C012e2eD` |
-| DustCapture | `0x9DacF353fFa758EE8f2bE682b53fEe75a94e05F1` |
+| DustSweeper | `0x2DafA662DF120D505d2d6ada6f934584c012E2Ed` |
+| DustCapture | `0x9DACF353ffA758EE8f2Be682b53Fee75a94E05F1` |
 
 - Keeper: `0x2A08Fb9EFdc0cD8eC6384107F3eA0A97454abFdD` (same key as the other chains)
 - Fee 100 bps. Menu: NVDAc, AAPLc, METAc, GOOGLc, AERO via the pools above.
