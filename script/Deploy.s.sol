@@ -6,6 +6,7 @@ import {DustVault} from "../src/DustVault.sol";
 import {DustRouter} from "../src/DustRouter.sol";
 import {DustSweeper} from "../src/DustSweeper.sol";
 import {DustCapture, IKeeperSource} from "../src/DustCapture.sol";
+import {SlipstreamFactoryAdapter} from "../src/SlipstreamFactoryAdapter.sol";
 import {IERC20, IWETH, IV3Pool, IV3PoolMeta, IV3Factory, IDustVault} from "../src/interfaces/IDust.sol";
 
 /// Deploy-only: the hardened trio + capture module + wiring. Prints addresses
@@ -52,6 +53,28 @@ contract Deploy is Script {
     uint256 constant ROBINHOOD_MAINNET = 4663;
     uint256 constant ROBINHOOD_TESTNET = 46630;
     uint256 constant ARC_MAINNET = 5042;
+    uint256 constant BASE_MAINNET = 8453;
+
+    // ---- Base mainnet (8453): Coinbase tokenized stocks (B20 precompiles) bought
+    // through Aerodrome Slipstream pools. Verified on-chain 2026-09-19, see
+    // BASE-ADDRESSES.md. The Dust contracts see Slipstream through a
+    // SlipstreamFactoryAdapter; the four core contracts are the audited bytecode.
+    address constant B_USDC = 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913; // 6 decimals
+    address constant B_WETH = 0x4200000000000000000000000000000000000006;
+    address constant B_WETH_POOL = 0xb2cc224c1c9feE385f8ad6a55b4d94E92359DC59; // WETH/USDC, legacy factory, ts 100, ~7.4M USDC, cardinality 3010
+    address constant B_CL_CURRENT = 0xf8f2eB4940CFE7d13603DDDD87f123820Fc061Ef; // Slipstream CLFactory (Gauges V3): all cbStock pools
+    address constant B_CL_LEGACY = 0x5e7BB104d84c7CB9B682AaC2F3d509f5F406809A; // original CLFactory: AERO and WETH pools
+    address constant B_CL_MID = 0xaDe65c38CD4849aDBA595a4323a8C7DdfE89716a; // intermediate CLFactory
+    address constant B_NVDA = 0xb20000000000000000000078ee7ce2fE4908108C; // NVDAc, 8 decimals
+    address constant B_AAPL = 0xb200000000000000000000C2e324d24d7eEcd1fb; // AAPLc
+    address constant B_META = 0xb2000000000000000000008bC8786B856E61707C; // METAc
+    address constant B_GOOGL = 0xb2000000000000000000002D0BA3164cc74f58B7; // GOOGLc
+    address constant B_AERO = 0x940181a94A35A4569E4529A3CDfB74e38FD98631; // AERO, 18 decimals
+    address constant BP_NVDA = 0x853F5f1B92b16714Fe6CDA67CAad0856B83C7ab9; // NVDAc/USDC ts 10, fee 500, ~1.48M USDC
+    address constant BP_AAPL = 0xA3b1E3f9747065e2073722Ff4c9027d3eA4994F0; // AAPLc/USDC ts 10, ~1.10M USDC
+    address constant BP_META = 0xEAF57753BC382E0324a1D43F72E7027705a2273E; // METAc/USDC ts 10, ~1.12M USDC
+    address constant BP_GOOGL = 0xB1987CAD1682841b4b641d50E520777eC5Ab5542; // GOOGLc/USDC ts 10, ~1.25M USDC
+    address constant BP_AERO = 0xa4FDd479eda160671636e2eCF8f993Cbf86258a8; // AERO/USDC legacy ts 100, fee 500, ~244k USDC
 
     // ---- Arc mainnet (5042): USDC is the stable AND the gas token. Verified
     // on-chain 2026-09-17 (see ARC-ADDRESSES.md). Only the USDC capture path is
@@ -124,6 +147,12 @@ contract Deploy is Script {
 
     function run() external {
         string memory net = vm.envOr("DEPLOY_NETWORK", string(""));
+        if (_eq(net, "base") || (bytes(net).length == 0 && block.chainid == BASE_MAINNET)) {
+            console2.log("chain id: %s", block.chainid);
+            console2.log("path:     BASE");
+            _deployBase();
+            return;
+        }
         if (_eq(net, "arc") || (bytes(net).length == 0 && block.chainid == ARC_MAINNET)) {
             console2.log("chain id: %s", block.chainid);
             console2.log("path:     ARC");
@@ -290,6 +319,137 @@ contract Deploy is Script {
         pools = vm.envOr("MENU_POOLS", ",", defPools);
         require(tokens.length > 0, "Deploy: empty menu");
         require(tokens.length == pools.length, "Deploy: MENU_TOKENS/MENU_POOLS length mismatch");
+    }
+
+    // Base mainnet (8453): identical bytecode behind a Slipstream adapter
+    // ------------------------------------------------------------------
+    /// Slot order decides which pool wins when two tick spacings carry the
+    /// same fee: cbStock pools (current factory, ts 10) first, then the deep
+    /// WETH and AERO pools on the legacy factory, then everything else.
+    function _baseAdapterSlots() internal pure returns (address[] memory fs, int24[] memory ts) {
+        fs = new address[](13);
+        ts = new int24[](13);
+        // legacy ts 100 first: it carries the deep AERO and WETH pools, and no
+        // cbStock pair exists there; the current factory's ts 10 (all cbStocks)
+        // comes next. A thin ts 10 AERO pool on the current factory would
+        // otherwise shadow the deep legacy one for the same 0.05% fee.
+        fs[0] = B_CL_LEGACY; ts[0] = 100;
+        fs[1] = B_CL_CURRENT; ts[1] = 10;
+        fs[2] = B_CL_CURRENT; ts[2] = 50;
+        fs[3] = B_CL_LEGACY; ts[3] = 2000;
+        fs[4] = B_CL_CURRENT; ts[4] = 1;
+        fs[5] = B_CL_CURRENT; ts[5] = 100;
+        fs[6] = B_CL_CURRENT; ts[6] = 200;
+        fs[7] = B_CL_CURRENT; ts[7] = 2000;
+        fs[8] = B_CL_LEGACY; ts[8] = 1;
+        fs[9] = B_CL_LEGACY; ts[9] = 50;
+        fs[10] = B_CL_LEGACY; ts[10] = 200;
+        fs[11] = B_CL_MID; ts[11] = 100;
+        fs[12] = B_CL_MID; ts[12] = 200;
+    }
+
+    /// Slipstream slot0 has six fields (no feeProtocol); the Uniswap-shaped
+    /// IV3Pool.slot0 would fail to decode it, so the Base path reads this one.
+    function _clCardinality(address pool) internal view returns (uint16 card, uint16 next) {
+        (bool ok, bytes memory ret) = pool.staticcall(abi.encodeWithSignature("slot0()"));
+        require(ok && ret.length == 6 * 32, "Deploy: not a Slipstream pool (slot0)");
+        (,,, card, next,) = abi.decode(ret, (uint160, int24, uint16, uint16, uint16, bool));
+    }
+
+    function _deployBase() internal {
+        require(block.chainid == BASE_MAINNET, "Deploy: base path requires chain id 8453");
+
+        address deployer = msg.sender;
+        address stable = vm.envOr("STABLE", B_USDC);
+        address treasury = vm.envOr("TREASURY", address(0));
+        address keeper = vm.envOr("KEEPER", deployer);
+        address finalOwner = vm.envOr("OWNER", deployer);
+        uint256 feeBps = vm.envOr("FEE_BPS", uint256(100));
+        address wethAddr = vm.envOr("WETH", B_WETH);
+        address ethPool = vm.envOr("ETH_POOL", B_WETH_POOL);
+        address[] memory defTokens = new address[](5);
+        address[] memory defPools = new address[](5);
+        defTokens[0] = B_NVDA; defPools[0] = BP_NVDA;
+        defTokens[1] = B_AAPL; defPools[1] = BP_AAPL;
+        defTokens[2] = B_META; defPools[2] = BP_META;
+        defTokens[3] = B_GOOGL; defPools[3] = BP_GOOGL;
+        defTokens[4] = B_AERO; defPools[4] = BP_AERO;
+        address[] memory tokens = vm.envOr("MENU_TOKENS", ",", defTokens);
+        address[] memory pools = vm.envOr("MENU_POOLS", ",", defPools);
+        require(tokens.length == pools.length && tokens.length > 0, "Deploy: MENU_TOKENS / MENU_POOLS length mismatch");
+
+        console2.log("deployer:   %s", deployer);
+        console2.log("STABLE:     %s (USDC)", stable);
+        console2.log("TREASURY:   %s", treasury);
+        console2.log("KEEPER:     %s", keeper);
+        console2.log("OWNER:      %s", finalOwner);
+        console2.log("FEE_BPS:    %s", feeBps);
+        console2.log("WETH:       %s", wethAddr);
+        console2.log("ETH_POOL:   %s (Slipstream)", ethPool);
+        for (uint256 i; i < tokens.length; i++) {
+            console2.log("menu[%s] token %s pool %s", i, tokens[i], pools[i]);
+        }
+
+        // ---- pre-flight (read-only) ----
+        require(stable.code.length > 0, "Deploy: STABLE has no code");
+        uint8 dec = IERC20(stable).decimals();
+        require(dec == 6, "Deploy: Base USDC must report 6 decimals");
+        uint256 unit = 10 ** uint256(dec);
+        require(feeBps <= 500, "Deploy: FEE_BPS above the 5% code ceiling");
+        require(keeper != address(0), "Deploy: KEEPER is zero");
+        require(finalOwner != address(0), "Deploy: OWNER is zero");
+        require(wethAddr.code.length > 0 && IERC20(wethAddr).decimals() == 18, "Deploy: WETH");
+        for (uint256 i; i < tokens.length; i++) {
+            // cbStocks are B20 precompiles: one byte of code (0xef), a real ERC-20 surface
+            require(tokens[i].code.length > 0, "Deploy: menu token has no code");
+            require(pools[i].code.length > 0, "Deploy: menu pool has no code");
+            address t0 = IV3Pool(pools[i]).token0();
+            address t1 = IV3Pool(pools[i]).token1();
+            bool ok = (t0 == stable && t1 == tokens[i]) || (t1 == stable && t0 == tokens[i]);
+            require(ok, "Deploy: pool does not pair STABLE with its menu token");
+            (uint16 card,) = _clCardinality(pools[i]);
+            require(card >= MIN_ORACLE_CARDINALITY, "Deploy: menu pool lacks oracle history for the TWAP floor");
+        }
+        {
+            address t0 = IV3Pool(ethPool).token0();
+            address t1 = IV3Pool(ethPool).token1();
+            require((t0 == wethAddr && t1 == stable) || (t0 == stable && t1 == wethAddr), "Deploy: ETH_POOL does not pair WETH with STABLE");
+            (uint16 card, uint16 next) = _clCardinality(ethPool);
+            console2.log("ETH_POOL oracle cardinality %s (next %s), live fee %s", card, next, IV3PoolMeta(ethPool).fee());
+        }
+        console2.log("deployer ETH (wei): %s", deployer.balance);
+        require(deployer.balance > 0, "Deploy: deployer holds no ETH on Base for gas");
+        if (treasury == address(0)) console2.log("WARNING: TREASURY unset -> sweep fee is DISABLED until owner calls setTreasury");
+        if (finalOwner == deployer) console2.log("WARNING: OWNER unset -> the deployer keeps DustSweeper ownership.");
+
+        // ---- deploy ----
+        vm.startBroadcast();
+        (address[] memory fs, int24[] memory ts) = _baseAdapterSlots();
+        address factory = vm.envOr("FACTORY", address(0));
+        if (factory == address(0)) {
+            factory = address(new SlipstreamFactoryAdapter(fs, ts));
+            console2.log("SlipstreamFactoryAdapter deployed at %s (%s slots)", factory, fs.length);
+        } else {
+            console2.log("FACTORY (adapter) reused: %s", factory);
+        }
+        // the adapter must resolve every pool we are about to list, before any core contract exists
+        // Slipstream pools report their CL factory, not the adapter, so the only
+        // provenance check that applies here is the one the contracts make
+        for (uint256 i; i < tokens.length; i++) {
+            require(IV3Factory(factory).getPool(tokens[i], stable, IV3PoolMeta(pools[i]).fee()) == pools[i], "Deploy: adapter does not resolve a menu pool");
+        }
+        require(IV3Factory(factory).getPool(wethAddr, stable, IV3PoolMeta(ethPool).fee()) == ethPool, "Deploy: adapter does not resolve ETH_POOL");
+        Deployed memory d = _deployCore(stable, unit, treasury, tokens, pools, wethAddr, ethPool, factory);
+        if (keeper != deployer) d.sweeper.setKeeper(keeper);
+        if (feeBps != 100) d.sweeper.setFeeBps(uint16(feeBps));
+        if (finalOwner != deployer) d.sweeper.transferOwnership(finalOwner);
+        vm.stopBroadcast();
+
+        _printAddresses(d, stable, unit, wethAddr, ethPool);
+        console2.log("DUST_KEEPER=%s", d.sweeper.keeper());
+        console2.log("DUST_TREASURY=%s", d.sweeper.treasury());
+        console2.log("DUST_FEE_BPS=%s", d.sweeper.feeBps());
+        console2.log("BASE: keeper runs with DUST_QUOTER_KIND=slipstream (see keeper/fly.base.toml)");
     }
 
     // Arc mainnet (5042): identical bytecode, USDC stable, cirBTC menu

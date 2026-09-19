@@ -6,8 +6,9 @@ Solidity + Foundry. Four contracts, no upgradeability, no admin power over user 
 - `src/DustRouter.sol` stable -> Stock Token swap with the round-up captured in the same transaction.
 - `src/DustSweeper.sol` owner-curated menu of (Stock Token, canonical USDG pool) pairs; each user composes their own basket and can clear it at any time; the keeper sweeps accrued round-ups into it against a pinned quote (amount, pools, fee, nonce), with every leg floored at the pool's own 10-minute TWAP less 3%, at most once per user per 5 minutes. Failing legs are skipped, never fatal. Fee is charged on the stable actually invested.
 - `src/DustCapture.sol` opt-in, user-capped pulls for round-ups observed outside the app.
+- `src/SlipstreamFactoryAdapter.sol` (Base only) presents Aerodrome Slipstream as a Uniswap-v3-shaped factory so the four contracts above deploy there unchanged.
 
-The single source of truth for every Robinhood Chain address is `MAINNET-ADDRESSES.md`; for Arc it is `ARC-ADDRESSES.md`. Do not guess addresses.
+The single source of truth for every Robinhood Chain address is `MAINNET-ADDRESSES.md`; for Arc it is `ARC-ADDRESSES.md`; for Base it is `BASE-ADDRESSES.md`. Do not guess addresses.
 
 ## Audit
 
@@ -25,6 +26,7 @@ The v2 contracts (tag `audit-2026-09`) were audited by [CredShields](https://cre
 | Robinhood Chain mainnet | 4663 | USDG `0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168`, 6 decimals | `uniswapV3SwapCallback` (canonical Uniswap v3) |
 | Robinhood Chain testnet | 46630 | test USDC `0xbf4479C07Dc6fdc6dAa764A0ccA06969e894275F`, 18 decimals | `synthraV3SwapCallback` |
 | Arc mainnet | 5042 | USDC `0x3600000000000000000000000000000000000000`, 6 decimals (also the gas token) | `uniswapV3SwapCallback` (Uniswap-v3-style factory) |
+| Base mainnet | 8453 | USDC `0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913`, 6 decimals | `uniswapV3SwapCallback` (Aerodrome Slipstream, behind `SlipstreamFactoryAdapter`) |
 
 Both callbacks are implemented, so the same bytecode works on either network. The router's stable unit is derived from `decimals()` at deploy time (1e6 on mainnet, 1e18 on testnet).
 
@@ -36,6 +38,7 @@ RPC endpoints are named in `foundry.toml` (`robinhood_mainnet`, `robinhood_testn
 forge build
 forge test                                   # unit + testnet fork suites
 forge test --match-contract DustArcFork -vv  # Arc mainnet fork suite (live cirBTC pool)
+forge test --match-contract DustBaseFork -vv # Base mainnet fork suite (live Aerodrome pools)
 FOUNDRY_FORK_RETRIES=5 FOUNDRY_FORK_RETRY_BACKOFF=2000 \
   forge test --match-contract DustMainnetFork -vv   # mainnet fork suite
 ```
