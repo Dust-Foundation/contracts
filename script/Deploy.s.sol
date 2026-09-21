@@ -42,8 +42,9 @@ import {IERC20, IWETH, IV3Pool, IV3PoolMeta, IV3Factory, IDustVault} from "../sr
 ///                pools from (default 0x1f7d...2efa on 4663; REQUIRED on any
 ///                other chain, e.g. the Synthra factory on the testnet)
 ///
-/// v3 menu: the mainnet default lists all fifteen verified (token, pool) pairs
-/// from MAINNET-ADDRESSES.md (the launch five plus the 2026-09-09 expansion).
+/// v3 menu: the mainnet default lists all twenty verified (token, pool) pairs
+/// from MAINNET-ADDRESSES.md (the launch five plus the 2026-09-09 and
+/// 2026-09-21 expansions).
 ///
 /// After deploying, the script makes sure ETH_POOL's oracle buffer can serve
 /// the capture module's 10-minute TWAP: if slot0().observationCardinalityNext
@@ -133,6 +134,17 @@ contract Deploy is Script {
     address constant MP_GLD = 0x7A6A053eCCf1446A2633E05aA6D40D09381997ec; // GLD/USDG 0.3%
     address constant MP_SPCX = 0xc61284332117c3FB23A2A56cceFFD07F7aF60029; // SPCX/USDG 0.05%
     address constant MP_MSTR = 0x17578C0e0D15da44f31677263114F71aE76653EA; // MSTR/USDG 1%
+    // ---- menu expansion (2026-09-21), verified against the canonical factory ----
+    address constant M_MU = 0xfF080c8ce2E5feadaCa0Da81314Ae59D232d4afD;
+    address constant M_COST = 0x4EA005168D7F09a7A0Ba9D1DEf21a479950E44C2;
+    address constant M_LLY = 0x8005d266423c7ea827372c9c864491e5786600ea;
+    address constant M_CRCL = 0xdF0992E440dD0be65BD8439b609d6D4366bf1CB5;
+    address constant M_HIMS = 0xCceE82fE024c36fA15E1005edE3E9e4787e23D09;
+    address constant MP_MU = 0xd057B1Bc54917855BBee58eAd58647f47caB35E5; // MU/USDG 0.3%
+    address constant MP_COST = 0x0a2121A50A09eD0796ae81F9c53fF9398355a398; // COST/USDG 0.3%
+    address constant MP_LLY = 0xF212D02146a897F5F686E9d629F6A73da534324a; // LLY/USDG 0.05%
+    address constant MP_CRCL = 0x654E4143e82a5824445Ade0824351C2A9ACD95a8; // CRCL/USDG 0.3%
+    address constant MP_HIMS = 0xC8C90d3a1c1a24967E773ac2aD0d456BA3E31F64; // HIMS/USDG 0.3%
     address constant M_WETH = 0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73; // 18 decimals, WETH9 deposit/withdraw
     address constant M_ETH_POOL = 0x52e65B17fB6E5BA00Ed806f37Afcd2DaA50271Ca; // WETH/USDG 0.01%, token0 = WETH
     address constant M_UNI_V3_FACTORY = 0x1f7d7550B1b028f7571E69A784071F0205FD2EfA; // canonical Uniswap v3 factory on 4663
@@ -295,11 +307,11 @@ contract Deploy is Script {
         }
     }
 
-    /// v3 menu: the fifteen verified (token, pool) pairs from
+    /// v3 menu: the twenty verified (token, pool) pairs from
     /// MAINNET-ADDRESSES.md unless MENU_TOKENS / MENU_POOLS override them.
     function _mainnetMenu() internal view returns (address[] memory tokens, address[] memory pools) {
-        address[] memory defTokens = new address[](15);
-        address[] memory defPools = new address[](15);
+        address[] memory defTokens = new address[](20);
+        address[] memory defPools = new address[](20);
         defTokens[0] = M_TSLA;   defPools[0] = MP_TSLA;
         defTokens[1] = M_NVDA;   defPools[1] = MP_NVDA;
         defTokens[2] = M_AAPL;   defPools[2] = MP_AAPL;
@@ -315,6 +327,11 @@ contract Deploy is Script {
         defTokens[12] = M_GLD;   defPools[12] = MP_GLD;
         defTokens[13] = M_SPCX;  defPools[13] = MP_SPCX;
         defTokens[14] = M_MSTR;  defPools[14] = MP_MSTR;
+        defTokens[15] = M_MU; defPools[15] = MP_MU;
+        defTokens[16] = M_COST; defPools[16] = MP_COST;
+        defTokens[17] = M_LLY; defPools[17] = MP_LLY;
+        defTokens[18] = M_CRCL; defPools[18] = MP_CRCL;
+        defTokens[19] = M_HIMS; defPools[19] = MP_HIMS;
         tokens = vm.envOr("MENU_TOKENS", ",", defTokens);
         pools = vm.envOr("MENU_POOLS", ",", defPools);
         require(tokens.length > 0, "Deploy: empty menu");

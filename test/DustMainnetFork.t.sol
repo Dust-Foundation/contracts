@@ -181,6 +181,11 @@ contract DustMainnetForkTest is Test {
     address constant GLD = 0xC9a981FEE1F9DEc688bb123ccDeCc63D0deBFC4e;
     address constant SPCX = 0x4a0E65A3EcceC6dBe60AE065F2e7bb85Fae35eEa;
     address constant MSTR = 0xec262a75e413fAfD0dF80480274532C79D42da09;
+    address constant MU = 0xfF080c8ce2E5feadaCa0Da81314Ae59D232d4afD;
+    address constant COST = 0x4EA005168D7F09a7A0Ba9D1DEf21a479950E44C2;
+    address constant LLY = 0x8005d266423c7ea827372c9c864491e5786600ea;
+    address constant CRCL = 0xdF0992E440dD0be65BD8439b609d6D4366bf1CB5;
+    address constant HIMS = 0xCceE82fE024c36fA15E1005edE3E9e4787e23D09;
     address constant P_MSFT = 0xeb60bCD1D920ad6E102690CCFC6fB488899E1510;
     address constant P_GOOGL = 0x34D0dC122CF9A8Eb296fC5e0D3A233625D7d19b7;
     address constant P_META = 0x107a7Cb40d8665360ba10E59471Af06150A50922;
@@ -191,6 +196,11 @@ contract DustMainnetForkTest is Test {
     address constant P_GLD = 0x7A6A053eCCf1446A2633E05aA6D40D09381997ec;
     address constant P_SPCX = 0xc61284332117c3FB23A2A56cceFFD07F7aF60029;
     address constant P_MSTR = 0x17578C0e0D15da44f31677263114F71aE76653EA;
+    address constant P_MU = 0xd057B1Bc54917855BBee58eAd58647f47caB35E5;
+    address constant P_COST = 0x0a2121A50A09eD0796ae81F9c53fF9398355a398;
+    address constant P_LLY = 0xF212D02146a897F5F686E9d629F6A73da534324a;
+    address constant P_CRCL = 0x654E4143e82a5824445Ade0824351C2A9ACD95a8;
+    address constant P_HIMS = 0xC8C90d3a1c1a24967E773ac2aD0d456BA3E31F64;
 
     /// blocks behind head to pin at when MAINNET_FORK_BLOCK is unset (~10 s)
     uint256 constant FORK_LAG = 100;
@@ -440,22 +450,25 @@ contract DustMainnetForkTest is Test {
         assertEq(address(capture.factory()), FACTORY);
     }
 
-    /// The fifteen-pair v3 default menu (Deploy.s.sol) all pass listStock's
+    /// The twenty-pair v3 default menu (Deploy.s.sol) all pass listStock's
     /// canonical-factory check on live state, and every pool serves the
     /// 10-minute TWAP the sweep floor needs.
     function test_menuExpansionPoolsAreCanonicalAndServeTwap() public {
         DustSweeper fresh = new DustSweeper(IERC20(USDG), IDustVault(address(vault)), treasury, IV3Factory(FACTORY));
-        address[15] memory toks = [TSLA, NVDA, AAPL, AMZN, SPY, MSFT, GOOGL, META, NFLX, AMD, PLTR, QQQ, GLD, SPCX, MSTR];
-        address[15] memory pools =
-            [P_TSLA, P_NVDA, P_AAPL, P_AMZN, P_SPY, P_MSFT, P_GOOGL, P_META, P_NFLX, P_AMD, P_PLTR, P_QQQ, P_GLD, P_SPCX, P_MSTR];
-        for (uint256 i; i < 15; i++) {
+        address[20] memory toks =
+            [TSLA, NVDA, AAPL, AMZN, SPY, MSFT, GOOGL, META, NFLX, AMD, PLTR, QQQ, GLD, SPCX, MSTR, MU, COST, LLY, CRCL, HIMS];
+        address[20] memory pools = [
+            P_TSLA, P_NVDA, P_AAPL, P_AMZN, P_SPY, P_MSFT, P_GOOGL, P_META, P_NFLX, P_AMD,
+            P_PLTR, P_QQQ, P_GLD, P_SPCX, P_MSTR, P_MU, P_COST, P_LLY, P_CRCL, P_HIMS
+        ];
+        for (uint256 i; i < 20; i++) {
             fresh.listStock(toks[i], pools[i]);
             assertEq(IV3PoolMeta(pools[i]).factory(), FACTORY);
             uint256 floor = fresh.twapFloor(pools[i], 1 * UNIT);
             assertGt(floor, 0, "TWAP floor must be computable for every menu pool");
             console2.log("%s pool fee %s, floor for 1 USDG: %s", IStockToken(toks[i]).symbol(), IV3PoolMeta(pools[i]).fee(), floor);
         }
-        assertEq(fresh.menuLength(), 15);
+        assertEq(fresh.menuLength(), 20);
         // the thin 0.05% TSLA pool is canonical too, but has no oracle history: it can be
         // listed and every leg on it is skipped (see test_M003_thinPoolWithoutOracleHistoryIsSkipped)
         (,,, uint16 thinCard,,,) = IPoolOracle(P_TSLA_THIN).slot0();

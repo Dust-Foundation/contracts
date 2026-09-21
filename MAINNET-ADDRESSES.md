@@ -191,6 +191,20 @@ Verified 2026-09-09 against the canonical Uniswap v3 factory: each pool pairs th
 
 Other deep candidates for later: SGOV, AMC, HIMS, GME, DJT, RDDT, SLV, USO, RIVN, MU, RBLX, SNAP, COST, LLY.
 
+## Menu expansion (2026-09-21): five more Stock Tokens
+
+Verified 2026-09-21 the same way (canonical factory `getPool`, USDG pair, liquidity above the keeper floor, observation cardinality 1800 or more, no measurable price impact on a $100 buy, `isBlocked` false on the registry). Listed on the live v3 sweeper with `listStock` from the owner key; the `Deploy.s.sol` default menu and the fork test carry all twenty for any future redeploy. Token addresses come from Robinhood's asset registry (`api.robinhood.com/rhj/assets`) and were checked against `symbol()` on-chain.
+
+| Ticker | Token | Pool (fee) |
+|---|---|---|
+| MU | 0xfF080c8ce2E5feadaCa0Da81314Ae59D232d4afD | 0xd057b1bc54917855bbee58ead58647f47cab35e5 (3000) |
+| COST | 0x4EA005168D7F09a7A0Ba9D1DEf21a479950E44C2 | 0x0a2121a50a09ed0796ae81f9c53ff9398355a398 (3000) |
+| LLY | 0x8005d266423c7ea827372c9c864491e5786600ea | 0xf212d02146a897f5f686e9d629f6a73da534324a (500) |
+| CRCL | 0xdF0992E440dD0be65BD8439b609d6D4366bf1CB5 | 0x654e4143e82a5824445ade0824351c2a9acd95a8 (3000) |
+| HIMS | 0xCceE82fE024c36fA15E1005edE3E9e4787e23D09 | 0xc8c90d3a1c1a24967e773ac2ad0d456ba3e31f64 (3000) |
+
+Depth at listing time (USDG plus token value in the pool): MU $1.0M, COST $760k, LLY $220k (the 1% tier holds $435k but costs users more per sweep), CRCL $1.75M, HIMS $1.33M. Still deep but not listed: SGOV ($2.4M, T-bill ETF), USO ($1.7M, oil ETF), RDDT ($1.3M, 1% tier only), GME ($1.1M, 1% tier only), AMC ($700k), SLV ($440k), DJT ($400k). COIN and QCOM still have no usable v3 USDG pool.
+
 ## Dust contracts v3 (post-audit; deployed 2026-09-11, chain 4663) — LIVE
 
 Response to the CredShields audit of tag `audit-2026-09` (12 findings, all
