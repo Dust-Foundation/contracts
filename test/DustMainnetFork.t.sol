@@ -200,6 +200,8 @@ contract DustMainnetForkTest is Test {
     address constant P_COST = 0x0a2121A50A09eD0796ae81F9c53fF9398355a398;
     address constant P_LLY = 0xF212D02146a897F5F686E9d629F6A73da534324a;
     address constant P_CRCL = 0x654E4143e82a5824445Ade0824351C2A9ACD95a8;
+    address constant CBBTC = 0xCEC185eB182c47d1bA1EFc84e6959e18cd620Be4; // Coinbase Wrapped BTC, 8 decimals
+    address constant P_CBBTC = 0x9664D869540E9D0a76f12C6623946C6D5d201e09; // cbBTC/USDG 0.05%
     address constant P_HIMS = 0xC8C90d3a1c1a24967E773ac2aD0d456BA3E31F64;
 
     /// blocks behind head to pin at when MAINNET_FORK_BLOCK is unset (~10 s)
@@ -469,6 +471,14 @@ contract DustMainnetForkTest is Test {
             console2.log("%s pool fee %s, floor for 1 USDG: %s", IStockToken(toks[i]).symbol(), IV3PoolMeta(pools[i]).fee(), floor);
         }
         assertEq(fresh.menuLength(), 20);
+
+        // blue-chip crypto (2026-09-30): an 8-decimal token and the WETH/USDG pool
+        // list the same way and get a TWAP floor
+        fresh.listStock(CBBTC, P_CBBTC);
+        fresh.listStock(WETH, USDG_WETH_POOL_100);
+        assertGt(fresh.twapFloor(P_CBBTC, 1 * UNIT), 0, "cbBTC floor");
+        assertGt(fresh.twapFloor(USDG_WETH_POOL_100, 1 * UNIT), 0, "WETH floor");
+        assertEq(fresh.menuLength(), 22);
         // the thin 0.05% TSLA pool is canonical too, but has no oracle history: it can be
         // listed and every leg on it is skipped (see test_M003_thinPoolWithoutOracleHistoryIsSkipped)
         (,,, uint16 thinCard,,,) = IPoolOracle(P_TSLA_THIN).slot0();

@@ -191,6 +191,17 @@ Verified 2026-09-09 against the canonical Uniswap v3 factory: each pool pairs th
 
 Other deep candidates for later: SGOV, AMC, HIMS, GME, DJT, RDDT, SLV, USO, RIVN, MU, RBLX, SNAP, COST, LLY.
 
+## Blue-chip crypto (2026-09-30): Bitcoin and Ether
+
+Two non-Stock tokens on the v3 menu, listed with `listStock` from the owner key after the same checks (canonical factory pool, USDG pair, TWAP history, `isBlocked` false). Neither is a Stock Token: the registry pause and blocklist do not apply to them, and the app shows them under a "Crypto" section with a plain description of what each token is.
+
+| Ticker | Token | Pool (fee) | Depth at listing |
+|---|---|---|---|
+| cbBTC | 0xCEC185eB182c47d1bA1EFc84e6959e18cd620Be4 (Coinbase Wrapped BTC, 8 decimals) | 0x9664d869540e9d0a76f12c6623946c6d5d201e09 (500) | ~$68k, cardinality 1400, 0.05% impact on $100 |
+| WETH | 0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73 | 0x52e65b17fb6e5ba00ed806f37afcd2daa50271ca (100) | ~$26M, cardinality 10809 |
+
+The cbBTC pool is thin by stock standards. The keeper's liquidity floor is normalised for token decimals (an 8-decimal token reads 1e5 lower than an 18-decimal one at equal depth) and set to 1e15 on this chain, still 100x above the dead 1% TSLA pool. Every leg remains bounded by the contract's TWAP floor. Checked and found unusable: every other top-ten crypto asset on this chain is a lookalike token with under $50k of liquidity; the 18-decimal "CBBTC" at 0xfa8B…1E18 is not Coinbase's token.
+
 ## Menu expansion (2026-09-21): five more Stock Tokens
 
 Verified 2026-09-21 the same way (canonical factory `getPool`, USDG pair, liquidity above the keeper floor, observation cardinality 1800 or more, no measurable price impact on a $100 buy, `isBlocked` false on the registry). Listed on the live v3 sweeper with `listStock` from the owner key; the `Deploy.s.sol` default menu and the fork test carry all twenty for any future redeploy. Token addresses come from Robinhood's asset registry (`api.robinhood.com/rhj/assets`) and were checked against `symbol()` on-chain.

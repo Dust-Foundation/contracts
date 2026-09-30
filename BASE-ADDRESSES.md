@@ -109,6 +109,8 @@ Block 51527574, 12 transactions, deployer / interim owner / treasury
 | DustVault | `0x3E83593D9D3f0F29410209070688AD2eA38b0d16` |
 | DustRouter | `0xa14a1fC162b5B54402ec234EAE884258E4940492` |
 | DustSweeper | `0x2DafA662DF120D505d2d6ada6f934584c012E2Ed` |
+
+Blue-chip crypto (2026-09-30): cbBTC `0xcbB7C0000aB88B473b1f5aFd9ef808440eed33Bf` via the legacy-factory tickSpacing 100 pool `0x4e962BB3889Bf030368F56810A9c96B83CB3E778` (~$3.2M), and WETH `0x4200000000000000000000000000000000000006` via the legacy tickSpacing 100 pool `0xb2cc224c1c9feE385f8ad6a55b4d94E92359DC59` (~$4.6M, also the capture ETH pool). Both resolve through the adapter at their current dynamic fee. cbXRP, cbDOGE and cbADA have Slipstream pools with no USDC in them and were not listed.
 | DustCapture | `0x9DACF353ffA758EE8f2Be682b53Fee75a94E05F1` |
 
 - Keeper: `0x2A08Fb9EFdc0cD8eC6384107F3eA0A97454abFdD` (same key as the other chains)
