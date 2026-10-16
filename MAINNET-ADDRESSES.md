@@ -191,6 +191,16 @@ Verified 2026-09-09 against the canonical Uniswap v3 factory: each pool pairs th
 
 Other deep candidates for later: SGOV, AMC, HIMS, GME, DJT, RDDT, SLV, USO, RIVN, MU, RBLX, SNAP, COST, LLY.
 
+## Real-world assets (2026-10-15): silver, oil, treasury bills
+
+ETF-backed Stock Tokens, listed with `listStock` from the owner key after the usual checks. GLD (already listed Sept 9) is presented with these in the app's "Real-world assets" section. Checked and not listed: BND has a 1% pool with no usable quote; no real-estate ETF (VNQ, XLRE, IYR) exists in Robinhood's registry yet, and there is no tokenized property, vehicle or other non-fund real-world asset on this chain.
+
+| Ticker | Token | Pool (fee) | Depth at listing |
+|---|---|---|---|
+| SLV | 0x411eFb0E7f985935DAec3D4C3ebaEa0d0AD7D89f | 0x8cb787e6c315d464775289bad00fdd67d53ecb3d (3000) | ~$312k, cardinality 1801 |
+| USO | 0xa30FA36Db767ad9eD3f7a60fC79526fB4d56D344 | 0x02175608f1b5e6b5ed221ccfdc7be197d111d915 (3000) | ~$2.4M, cardinality 7200 |
+| SGOV | 0x92FD66527192E3e61d4DDd13322Aa222DE86F9B5 | 0xfab520051f96f4d2a32c22b6a3dd7fffdf231bfe (3000) | ~$1.2M, cardinality 1800 |
+
 ## Blue-chip crypto (2026-09-30): Bitcoin and Ether
 
 Two non-Stock tokens on the v3 menu, listed with `listStock` from the owner key after the same checks (canonical factory pool, USDG pair, TWAP history, `isBlocked` false). Neither is a Stock Token: the registry pause and blocklist do not apply to them, and the app shows them under a "Crypto" section with a plain description of what each token is.

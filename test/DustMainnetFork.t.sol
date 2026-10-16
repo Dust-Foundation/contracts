@@ -202,6 +202,12 @@ contract DustMainnetForkTest is Test {
     address constant P_CRCL = 0x654E4143e82a5824445Ade0824351C2A9ACD95a8;
     address constant CBBTC = 0xCEC185eB182c47d1bA1EFc84e6959e18cd620Be4; // Coinbase Wrapped BTC, 8 decimals
     address constant P_CBBTC = 0x9664D869540E9D0a76f12C6623946C6D5d201e09; // cbBTC/USDG 0.05%
+    address constant SLV = 0x411eFb0E7f985935DAec3D4C3ebaEa0d0AD7D89f;
+    address constant USO = 0xa30FA36Db767ad9eD3f7a60fC79526fB4d56D344;
+    address constant SGOV = 0x92FD66527192E3e61d4DDd13322Aa222DE86F9B5;
+    address constant P_SLV = 0x8cB787e6c315D464775289BaD00FDD67d53Ecb3D; // SLV/USDG 0.3%
+    address constant P_USO = 0x02175608F1b5E6b5ed221cCFdC7Be197D111D915; // USO/USDG 0.3%
+    address constant P_SGOV = 0xfAb520051f96F4D2a32c22B6a3dD7fFfdf231bFe; // SGOV/USDG 0.3%
     address constant P_HIMS = 0xC8C90d3a1c1a24967E773ac2aD0d456BA3E31F64;
 
     /// blocks behind head to pin at when MAINNET_FORK_BLOCK is unset (~10 s)
@@ -479,6 +485,15 @@ contract DustMainnetForkTest is Test {
         assertGt(fresh.twapFloor(P_CBBTC, 1 * UNIT), 0, "cbBTC floor");
         assertGt(fresh.twapFloor(USDG_WETH_POOL_100, 1 * UNIT), 0, "WETH floor");
         assertEq(fresh.menuLength(), 22);
+
+        // real-world assets (2026-10-15): silver, oil and treasury bills, ETF-backed Stock Tokens
+        fresh.listStock(SLV, P_SLV);
+        fresh.listStock(USO, P_USO);
+        fresh.listStock(SGOV, P_SGOV);
+        assertGt(fresh.twapFloor(P_SLV, 1 * UNIT), 0, "SLV floor");
+        assertGt(fresh.twapFloor(P_USO, 1 * UNIT), 0, "USO floor");
+        assertGt(fresh.twapFloor(P_SGOV, 1 * UNIT), 0, "SGOV floor");
+        assertEq(fresh.menuLength(), 25);
         // the thin 0.05% TSLA pool is canonical too, but has no oracle history: it can be
         // listed and every leg on it is skipped (see test_M003_thinPoolWithoutOracleHistoryIsSkipped)
         (,,, uint16 thinCard,,,) = IPoolOracle(P_TSLA_THIN).slot0();
